@@ -10,7 +10,7 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 - **Episodes, not just barks.** Barks less than 8 s apart (configurable) are grouped into one episode with a start time, duration, bark count and peak level.
 - **Clips for review.** Each episode is saved as a WAV with 2 s of lead-in and lead-out. The clip page shows a spectrogram with every bark marked; click a bark to hear it alone.
 - **Which dog.** Label a few barks per dog in the dashboard and new barks are matched to the closest voice automatically. Mark false alarms as "Not a bark" and similar sounds get ignored from then on.
-- **Live band on every page.** A picture that matches what's happening (a napping dog during quiet hours, a sitting dog in the daytime or when there's noise without barking, a barking dog the moment a bark is detected) next to a live EQ of the microphone with falling bars and peak caps. The EQ is monotone normally and lights up green to red while a dog is barking, with red BARK splashes popping in at random sizes and angles. Use your own photos, GIFs or video loops. Click the picture for a full-screen view you can leave on a spare screen or tablet.
+- **Live band on every page.** A picture that matches what's happening (a napping dog during quiet hours, a sitting dog in the daytime or when there's noise without barking, a barking dog the moment a bark is detected) next to a live EQ of the microphone. Each column's top cell is the bright peak and the stack under it is half strength, so the tops read as a line of sound; bars fall with gravity and peaks hang briefly. It's monotone in the site's colors normally and switches to caution yellow while a dog is barking, with optional red BARK words popping in at random sizes and angles. It updates 6 times a second while quiet and 20 while barking. Use your own photos, GIFs or video loops. Click the picture for a full-screen view you can leave on a spare screen or tablet.
 - **Dashboard.** Plain-language daily summary, a 24-hour timeline coloured by dog, two-week totals, an hour-by-weekday heatmap, clip list with filters.
 - **Your local ordinance.** Enter the animal-noise rule that applies where you live (Burnsville, MN is the default) and the criteria for incidents worth reporting: sustained barking, barking in quiet hours, frequent days, habitual patterns.
 - **Complaint reports.** Per dog or per neighbor's household, for any date range: print or save as PDF, download a clean CSV, or download every clip plus the CSVs as a zip for evidence.
@@ -70,7 +70,7 @@ Everything adjustable lives on the **Settings** page and takes effect immediatel
 - **Detection:** bark confidence, loudness trigger, quiet floor, microphone boost, episode gap, smallest episode, ignoring learned false alarms.
 - **Code parameters:** quiet hours, sustained-barking minutes, allowed break, frequent-day total, habitual pattern.
 - **Ordinance and contacts:** rule text, code section, source, penalty, where to report, and your details for reports.
-- **Heartbeat pictures:** add or remove calm and barking pictures.
+- **Live band:** turn the BARK words on or off, and add or remove the nap, sit and bark pictures.
 - **Alerts and dog matching:** webhook, alert threshold, matching confidence.
 - **System:** live mic level, detector status, clock sync.
 
@@ -155,7 +155,7 @@ python -m barktracker demo                 # two weeks of synthetic barking to t
 
 ## API
 
-The dashboard uses a small JSON API, documented at `/api/docs`. Useful bits: `/api/status`, `/api/summary?days=14`, `/api/episodes`, `/api/episodes/{id}/audio`, `/api/report?dog=1&from=2026-10-01&to=2026-10-31`, `/api/report.csv` (same parameters, plus `kind=daily`), `/api/report/clips.zip`, `/api/ordinance`, `/api/settings`, `/api/live` (or `/api/live/stream` for server-sent events at 20 per second), `/api/media`.
+The dashboard uses a small JSON API, documented at `/api/docs`. Useful bits: `/api/status`, `/api/summary?days=14`, `/api/episodes`, `/api/episodes/{id}/audio`, `/api/report?dog=1&from=2026-10-01&to=2026-10-31`, `/api/report.csv` (same parameters, plus `kind=daily`), `/api/report/clips.zip`, `/api/ordinance`, `/api/settings`, `/api/live` (or `/api/live/stream` for server-sent events: 6 per second while quiet, 20 while barking), `/api/media`.
 
 ## Development
 

@@ -45,6 +45,11 @@ class LiveMode:
         return start <= t < end if start < end else (t >= start or t < end)
 
     @staticmethod
+    def is_barking(det, now: float | None = None) -> bool:
+        now = now or time.time()
+        return det.ep is not None or bool(det.last_bark_wall and now - det.last_bark_wall < BARK_LINGER_SECONDS)
+
+    @staticmethod
     def smoothed_level(det) -> tuple[float, float]:
         hist = list(det.history)[-20:]                 # ~2 s (history samples every 100 ms)
         if not hist:
@@ -58,7 +63,7 @@ class LiveMode:
                     "level_db": None, "floor_db": None, "bands": [], "quiet_hours": self.quiet_hours_now(now),
                     "error": error}
         ep = det.ep
-        barking = ep is not None or (det.last_bark_wall and now - det.last_bark_wall < BARK_LINGER_SECONDS)
+        barking = self.is_barking(det, now)
         level, floor = self.smoothed_level(det)
         noisy = level - floor >= NOISY_ABOVE_FLOOR_DB or level >= NOISY_ABSOLUTE_DBFS
         quiet_hours = self.quiet_hours_now(now)

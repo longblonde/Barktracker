@@ -68,7 +68,8 @@ class NotifyConfig:
 
 @dataclass
 class UiConfig:
-    media_dir: str | None = None         # folder holding idle/ and bark/ pictures; default <data_dir>/media
+    media_dir: str | None = None         # folder holding quiet/, active/ and bark/ pictures; default <data_dir>/media
+    bark_words: bool = True              # red BARK words over the live band when a bark is detected
 
 
 @dataclass

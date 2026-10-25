@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -33,7 +34,8 @@ STATIC = Path(__file__).parent / "static"
 MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
                ".webp": "image/webp", ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm"}
 VIDEO = {".mp4", ".webm"}
-MEDIA_KINDS = ("quiet", "active", "bark")   # nap / sit / bark pictures
+MEDIA_KINDS = ("quiet", "active", "bark")
+LIVE_SLOW, LIVE_FAST = 1 / 6, 1 / 20      # seconds between live updates: quiet / barking   # nap / sit / bark pictures
 
 
 class DogIn(BaseModel):
@@ -422,14 +424,26 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     @app.get("/api/live/stream")
     async def live_stream(request: Request, count: int = 0):
-        """Server-sent events, 20 per second: picture mode, bark state and EQ bands.
+        """Server-sent events with the picture mode, bark state and EQ bands.
+        6 updates a second while it's quiet, 20 a second while a bark is detected. The EQ sent is
+        the loudest seen since the last update, so slow updates don't miss short sounds.
         count > 0 ends the stream after that many events (for scripts and tests)."""
         async def gen():
             yield "retry: 2000\n\n"
-            sent = 0
+            sent, last_send, peak = 0, 0.0, None
             while not await request.is_disconnected() and (count <= 0 or sent < count):
-                sent += 1
-                yield f"data: {json.dumps(livemode.snapshot(bark.detector, bark.error), separators=(',', ':'))}\n\n"
+                det = bark.detector
+                if det is not None:
+                    peak = det.eq.copy() if peak is None else np.maximum(peak, det.eq)
+                barking = det is not None and livemode.is_barking(det)
+                now = time.monotonic()
+                if now - last_send >= (LIVE_FAST if barking else LIVE_SLOW) or sent == 0:
+                    snap = livemode.snapshot(det, bark.error)
+                    if peak is not None and snap["bands"]:
+                        snap["bands"] = [round(float(v), 2) for v in peak]
+                    snap["interval"] = LIVE_FAST if snap["mode"] == "bark" else LIVE_SLOW
+                    yield f"data: {json.dumps(snap, separators=(',', ':'))}\n\n"
+                    sent, last_send, peak = sent + 1, now, None
                 await asyncio.sleep(0.05)
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

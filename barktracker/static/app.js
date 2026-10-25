@@ -540,7 +540,7 @@ async function renderDogs() {
 // --------------------------------------------------------------- settings
 const SETTINGS_SECTIONS = [
   ["storage", "Storage"], ["detection", "Detection"], ["code", "Code parameters"], ["ordinance", "Ordinance and contacts"],
-  ["pictures", "Heartbeat pictures"], ["notify", "Alerts and dog matching"], ["system", "System"],
+  ["pictures", "Live band"], ["notify", "Alerts and dog matching"], ["system", "System"],
 ];
 async function renderSettings() {
   const [st, ord, media] = await Promise.all([api("/api/settings"), api("/api/ordinance"), api("/api/media")]);
@@ -549,7 +549,7 @@ async function renderSettings() {
     <section><h1>Settings</h1><p class="sub">Changes take effect right away and are kept on this Pi.</p></section>
     <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}">${t}</a>`).join("")}</nav>
     ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}`;
-  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures(media); drawNotify(st); drawSystem(st);
+  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures({ ...media, barkWords: st.values["ui.bark_words"] !== false }); drawNotify(st); drawSystem(st);
   if (route.arg) $(`#sec-${route.arg}`)?.scrollIntoView();
 }
 
@@ -716,25 +716,33 @@ function drawPictures(m) {
     </div>`;
   };
   $("#sec-pictures").innerHTML = `<div class="panel form">
-    <h2>Heartbeat pictures</h2>
+    <h2>Live band</h2>
     <p class="small muted intro">The band at the top of every page shows one of three pictures. Photos, GIFs, SVGs and short MP4 or WebM loops all work; if a folder has several, one is picked at random. You can also copy files straight into <code>${esc(m.folder)}/quiet</code>, <code>/active</code> and <code>/bark</code> on the Pi.</p>
+    <label class="check"><input type="checkbox" id="barkWords" ${m.barkWords ? "checked" : ""}> Show red BARK words when a bark is detected</label>
     <div class="three">
       ${col("quiet", "Napping", "Quiet hours, when it's calm.")}
       ${col("active", "Sitting", "Daytime, or noise without barking.")}
       ${col("bark", "Barking", "While a bark is being detected.")}
     </div>
   </div>`;
+  $("#barkWords").onchange = async (e) => {
+    try {
+      await api("/api/settings", { method: "PUT", body: { values: { "ui.bark_words": e.target.checked } } });
+      Beat.setPrefs({ barkWords: e.target.checked });
+      toast(e.target.checked ? "BARK words on" : "BARK words off");
+    } catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
+  };
   $("#sec-pictures").querySelectorAll("[data-up]").forEach((inp) => inp.addEventListener("change", async () => {
     let r = m;
     for (const f of inp.files) {
       try { r = await fetch(`/api/media/${inp.dataset.up}/${encodeURIComponent(f.name)}`, { method: "PUT", body: f }).then(async (x) => { if (!x.ok) throw new Error((await x.json()).detail); return x.json(); }); }
       catch (e) { toast(`${f.name}: ${e.message}`); }
     }
-    toast("Pictures added"); drawPictures(r); Beat.loadMedia();
+    toast("Pictures added"); drawPictures({ ...r, barkWords: $("#barkWords").checked }); Beat.loadMedia();
   }));
   $("#sec-pictures").querySelectorAll("[data-delpic]").forEach((b) => b.addEventListener("click", async () => {
     const r = await api(`/api/media/${b.dataset.delpic.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
-    toast("Picture removed"); drawPictures(r); Beat.loadMedia();
+    toast("Picture removed"); drawPictures({ ...r, barkWords: $("#barkWords").checked }); Beat.loadMedia();
   }));
 }
 
@@ -957,6 +965,7 @@ const Beat = (() => {
 
   // ---- BARK splashes
   function spawn(n) {
+    if (!prefs.barkWords) return;
     const count = Math.min(5, Math.max(1, n)) + (Math.random() < 0.5 ? 1 : 0);
     const big = document.body.classList.contains("kiosk") ? 2.6 : 1;
     for (let i = 0; i < (reduce.matches ? 1 : count); i++) {
@@ -1018,14 +1027,14 @@ const Beat = (() => {
   function disconnect() { es?.close(); es = null; clearInterval(pollTimer); pollTimer = null; }
 
   // ---- EQ: LED-segment bars with gravity and peak caps
+  // Monotone: the site's ink normally, caution yellow while barking. In each column only the top
+  // cell (the peak cap) is full brightness; the stack under it is a steady ~55%, so the caps read
+  // as a line of sound.
   const ctx = canvas.getContext("2d");
   let bars = [], last = performance.now();
-  const HOT = [[0, [35, 176, 33]], [0.38, [163, 207, 28]], [0.58, [242, 211, 15]], [0.76, [243, 154, 20]], [0.9, [240, 90, 29]], [1, [255, 32, 32]]];
-  function hot(t) {
-    let k = 0; while (k < HOT.length - 2 && t > HOT[k + 1][0]) k++;
-    const [a, ca] = HOT[k], [b, cb] = HOT[k + 1], u = Math.min(1, Math.max(0, (t - a) / (b - a)));
-    return ca.map((c, i) => Math.round(c + (cb[i] - c) * u));
-  }
+  const round = (x, y, w, h, r) => {
+    if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); } else ctx.fillRect(x, y, w, h);
+  };
   function target(i, n) {
     const src = live.bands || [];
     if (!src.length || live.state === "off" || live.state === "error") return 0;
@@ -1047,15 +1056,18 @@ const Beat = (() => {
     const n = W < 360 ? 14 : W < 640 ? 20 : W < 1100 ? 28 : 36;
     if (bars.length !== n) bars = Array.from({ length: n }, () => ({ h: 0, peak: 0, hold: 0, v: 0 }));
     const reflect = H > 120, area = reflect ? H * 0.74 : H;
-    const gapY = area > 120 ? 4 : 3, S = Math.max(5, Math.min(16, Math.floor(area / (area > 120 ? 13 : 11))));
+    const gapY = area > 120 ? 4 : 3, S = Math.max(4, Math.min(16, Math.floor(area / (area > 120 ? 13 : 11))));
     const segH = (area - gapY * (S - 1)) / S, gapX = W > 600 ? 4 : 3, bw = (W - gapX * (n - 1)) / n;
+    const r = Math.min(2.5, segH / 3, bw / 4);
     const barking = live.mode === "bark" && live.state !== "error";
-    const css = getComputedStyle(band), ink = css.getPropertyValue("--ink").trim(), faint = css.getPropertyValue("--faint").trim();
+    const css = getComputedStyle(band);
+    const on = css.getPropertyValue(barking ? "--caution" : "--ink").trim();
+    const off = barking ? on : css.getPropertyValue("--faint").trim(), offAlpha = barking ? 0.16 : 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     bars.forEach((bar, i) => {
       const t = target(i, n);
-      if (reduce.matches) { bar.h = t; bar.peak = 0; }
+      if (reduce.matches) { bar.h = t; bar.peak = t; }
       else {
         bar.h = t > bar.h ? bar.h + (t - bar.h) * 0.7 : Math.max(t, bar.h - 1.3 * dt);
         if (bar.h >= bar.peak) { bar.peak = bar.h; bar.hold = 0.45; bar.v = 0; }
@@ -1063,18 +1075,18 @@ const Beat = (() => {
         else { bar.v += 2.2 * dt; bar.peak = Math.max(bar.h, bar.peak - bar.v * dt); }
       }
       const lit = Math.round(bar.h * S), x = i * (bw + gapX);
-      const capIdx = bar.peak > 0.04 ? Math.min(S - 1, Math.max(lit, Math.floor(bar.peak * S))) : -1;
+      const top = bar.peak > 0.04 || lit > 0 ? Math.min(S - 1, Math.max(lit - 1, Math.floor(bar.peak * S))) : -1;
       for (let j = 0; j < S; j++) {
-        const y = area - (j + 1) * segH - j * gapY, f = S > 1 ? j / (S - 1) : 1;
-        let color, alpha;
-        if (j === capIdx && !reduce.matches) { color = barking ? "rgb(255,32,32)" : ink; alpha = 1; }
-        else if (j < lit) { color = barking ? `rgb(${hot(f)})` : ink; alpha = barking ? 1 : 0.45 + 0.55 * f; }
-        else { color = barking ? `rgb(${hot(f)})` : faint; alpha = barking ? 0.13 : 1; }
+        const y = area - (j + 1) * segH - j * gapY;
+        let alpha, color;
+        if (j === top) { color = on; alpha = 1; }
+        else if (j < lit) { color = on; alpha = 0.55; }
+        else { color = off; alpha = offAlpha; }
         ctx.globalAlpha = alpha; ctx.fillStyle = color;
-        ctx.fillRect(x, y, bw, segH);
-        if (reflect && (j < lit || j === capIdx)) {
+        round(x, y, bw, segH, r);
+        if (reflect && (j < lit || j === top)) {
           const ry = area + gapY * 2 + j * (segH + gapY);
-          if (ry < H) { ctx.globalAlpha = alpha * 0.16 * (1 - j / S); ctx.fillRect(x, ry, bw, segH); }
+          if (ry < H) { ctx.globalAlpha = alpha * 0.16 * (1 - j / S); round(x, ry, bw, segH, r); }
         }
       }
     });
@@ -1082,14 +1094,21 @@ const Beat = (() => {
     if (!reduce.matches) requestAnimationFrame(frame);
   }
 
+  // ---- display preferences (stored on the Pi, shared by every screen)
+  let prefs = { barkWords: true };
+  async function loadPrefs() {
+    try { const st = await api("/api/settings"); prefs.barkWords = st.values["ui.bark_words"] !== false; } catch (_) { /* keep defaults */ }
+  }
+  function setPrefs(p) { Object.assign(prefs, p); if (!prefs.barkWords) splash.replaceChildren(); }
+
   function start() {
-    loadMedia(); connect();
+    loadPrefs(); loadMedia(); connect();
     if (reduce.matches) setInterval(() => frame(performance.now()), 250); else requestAnimationFrame(frame);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) disconnect(); else { last = performance.now(); connect(); }
     });
   }
-  return { start, loadMedia, spawn };
+  return { start, loadMedia, spawn, setPrefs };
 })();
 
 // ------------------------------------------------------------- kiosk view

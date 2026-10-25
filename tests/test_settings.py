@@ -1,3 +1,4 @@
+import pytest
 import time
 
 import numpy as np
@@ -124,4 +125,30 @@ def test_live_stream_sends_events(tmp_path):
             if line.startswith("data: "):
                 events.append(json.loads(line[6:]))
     assert len(events) == 2 and events[0]["state"] == "off" and events[0]["mode"] == "nap"
+    assert events[0]["interval"] == pytest.approx(1 / 6)          # slow while nothing is barking
+    app.shutdown()
+
+
+def test_stream_speeds_up_while_barking(tmp_path):
+    import json
+    cfg, app, c = make(tmp_path)
+    det = BarkDetector(cfg, HeuristicClassifier(), app.store)
+    app.detector = det
+    det.last_bark_wall = time.time() + 30            # pretend a bark is happening right now
+    t0 = time.monotonic()
+    with c.stream("GET", "/api/live/stream?count=6") as r:
+        events = [json.loads(l[6:]) for l in r.iter_lines() if l.startswith("data: ")]
+    elapsed = time.monotonic() - t0
+    assert len(events) == 6 and all(e["mode"] == "bark" for e in events)
+    assert events[0]["interval"] == pytest.approx(1 / 20)
+    assert elapsed < 0.8                              # 6 events at 20/s, not 6/s (~0.8 s+)
+    app.shutdown()
+
+
+def test_bark_words_setting(tmp_path):
+    cfg, app, c = make(tmp_path)
+    assert c.get("/api/settings").json()["values"]["ui.bark_words"] is True
+    c.put("/api/settings", json={"values": {"ui.bark_words": False}})
+    assert cfg.ui.bark_words is False
+    assert c.get("/api/settings").json()["values"]["ui.bark_words"] is False
     app.shutdown()

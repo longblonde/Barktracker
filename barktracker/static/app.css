@@ -11,6 +11,7 @@
   --faint: #e8ecec;
   --live: #e2a03f;
   --bark: #d4252a;
+  --caution: #e8a800;
   --danger: #c2453d;
   --unknown: #9aa5ad;
   --focus: #2f6fd6;
@@ -23,7 +24,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --ink: #e4e9ec; --surface: #151b20; --panel: #1d252b; --rule: #33404a;
-    --muted: #93a0a9; --faint: #26313a; --unknown: #6f7c86; --bark: #ff4a4f; color-scheme: dark;
+    --muted: #93a0a9; --faint: #26313a; --unknown: #6f7c86; --bark: #ff4a4f; --caution: #ffc21a; color-scheme: dark;
   }
 }
 * { box-sizing: border-box; }
@@ -276,7 +277,7 @@ audio { width: 100%; margin-top: 12px; }
 
 /* ---- heartbeat band (top of every page) ---- */
 .beat {
-  position: relative; display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: center;
+  position: relative; display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: stretch;
   padding: 12px max(24px, calc((100% - 1120px) / 2 + 24px)); background: var(--panel);
   border-bottom: 1px solid var(--rule); overflow: hidden; transition: background-color .4s;
 }
@@ -292,12 +293,13 @@ audio { width: 100%; margin-top: 12px; }
 .beat-media > .on { opacity: 1; }
 .beat-media > .snap { transition: none; }
 .beat-info { min-width: 0; }
+.beat-frame { align-self: start; }
 .beat-title { margin: 0 0 4px; font-size: 14px; color: var(--muted); }
 .beat-title strong { font: 600 22px/1.2 var(--display); color: var(--ink); margin-right: 8px; letter-spacing: -0.01em; }
 .beat[data-state="barking"] .beat-title strong { color: var(--bark); }
 .beat[data-state="error"] .beat-title strong { color: var(--danger); }
-.beat-info { display: grid; gap: 6px; }
-.beat-eq { display: block; width: 100%; height: 76px; }
+.beat-info { display: flex; flex-direction: column; gap: 6px; }
+.beat-eq { display: block; width: 100%; flex: 1 1 0; min-height: 40px; height: auto; }
 .splash { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .splash-word {
   position: absolute; font: 800 var(--fs)/1 var(--display); color: var(--bark); white-space: nowrap;
@@ -322,7 +324,7 @@ audio { width: 100%; margin-top: 12px; }
   .beat { gap: 12px; padding: 10px 16px; }
   .beat-frame { width: 116px; }
   .beat-title strong { font-size: 18px; display: block; }
-  .beat-eq { height: 56px; }
+  .beat-eq { min-height: 30px; }
 }
 @media print { .beat { display: none !important; } }
 
@@ -333,7 +335,7 @@ body.kiosk .beat-frame { width: auto; height: 100%; max-width: 100%; justify-sel
 body.kiosk .beat-info { max-width: 900px; width: 100%; justify-self: center; text-align: center; }
 body.kiosk .beat-title { font-size: 20px; }
 body.kiosk .beat-title strong { font-size: 44px; display: block; margin: 0 0 4px; }
-body.kiosk .beat-eq { height: 220px; }
+body.kiosk .beat-eq { flex: none; height: 220px; }
 body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width: none; margin: 0; z-index: 5; }
 .kiosk-exit { opacity: .6; text-decoration: none; }
 .kiosk-exit:hover, .kiosk-exit:focus-visible { opacity: 1; }

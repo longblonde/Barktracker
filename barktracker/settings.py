@@ -41,6 +41,7 @@ SPECS = {s.key: s for s in [
     Spec("identify.min_labels_per_dog", "int", 1, 100),
     Spec("notify.webhook_url", "str"),
     Spec("notify.min_duration", "float", 0, 86400),
+    Spec("ui.bark_words", "bool"),
 ]}
 
 
