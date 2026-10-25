@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "barklog"
+version = "0.1.0"
+description = "Raspberry Pi bark detector and logger with a web dashboard"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["numpy>=1.24", "sounddevice>=0.4.6", "fastapi>=0.110", "uvicorn>=0.27", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+model = ["ai-edge-litert"]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+barklog = "barklog.main:main"
+
+[tool.setuptools.packages.find]
+include = ["barklog*"]
+
+[tool.setuptools.package-data]
+barklog = ["static/*", "static/fonts/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

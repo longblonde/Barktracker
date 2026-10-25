@@ -1,0 +1,44 @@
+# Barklog configuration. Copy to config.yaml (the installer does this) and edit.
+# Restart after changes:  sudo systemctl restart barklog
+# Every key is optional; anything left out uses the default shown here.
+
+data_dir: data                 # database + clips (relative to this file)
+timezone: null                 # e.g. America/Chicago. null = the Pi's system time zone
+
+audio:
+  device: null                 # null = default input. Or part of the name ("USB") or an index.
+                               # List devices with:  .venv/bin/python -m barklog devices
+  samplerate: 16000            # use 48000 or 44100 if your mic refuses 16000
+  gain_db: 0                   # software boost for quiet mics (try 6-12)
+
+detection:
+  mode: auto                   # auto (YAMNet if installed, else basic) | yamnet | heuristic
+  model_path: models/yamnet.tflite
+  trigger_db: 10               # how far above background noise a sound must be to get checked
+  min_level_dbfs: -55          # ignore anything quieter than this
+  bark_threshold: 0.35         # 0-1. Raise to reduce false alarms, lower to catch distant barks
+  episode_gap: 8               # seconds of quiet that end an episode
+  min_episode_barks: 1         # drop episodes with fewer barks (2 filters out single woofs)
+  suppress_learned_false_positives: true   # drop sounds that match ones you marked "Not a bark"
+
+clips:
+  preroll: 2                   # seconds of audio kept before the first bark
+  postroll: 2                  # ...and after the last
+  max_clip_seconds: 300        # long episodes keep logging, but the clip stops growing here
+  retention_days: 60           # delete clip audio after this many days (stats are kept)
+  max_disk_mb: 4000            # and delete oldest clips if they use more than this
+
+identify:
+  enabled: true
+  min_labels_per_dog: 3        # labelled barks needed before a dog is matched automatically
+  min_confidence: 0.55         # below this a bark stays "Unidentified"
+
+web:
+  host: 0.0.0.0
+  port: 8080
+  username: null               # set both to require a login
+  password: null
+
+notify:
+  webhook_url: null            # POSTs JSON when an episode ends, e.g. https://ntfy.sh/my-barklog
+  min_duration: 30             # only for episodes at least this long (seconds)

@@ -1,0 +1,131 @@
+"""Wires the detector, storage, identifier, maintenance and notifications together."""
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import time
+import urllib.request
+from pathlib import Path
+
+from .classifier import make_classifier
+from .clips import enforce_retention
+from .config import Config
+from .detector import BarkDetector, run_source
+from .identify import DogIdentifier, retrain_and_repredict
+from .storage import Store
+
+log = logging.getLogger(__name__)
+
+
+class BarkApp:
+    def __init__(self, cfg: Config, source=None, start_detector: bool = True):
+        self.cfg = cfg
+        cfg.clips_path.mkdir(parents=True, exist_ok=True)
+        self.store = Store(cfg.db_path)
+        self.recover()
+        ic = cfg.identify
+        self.identifier = DogIdentifier(ic.k, ic.min_labels_per_dog, ic.min_confidence) if ic.enabled else None
+        if self.identifier:
+            retrain_and_repredict(self.store, self.identifier)
+        self.source = source
+        self.detector: BarkDetector | None = None
+        self.stop = threading.Event()
+        self.error: str | None = None
+        self.threads: list[threading.Thread] = []
+        if start_detector and source is not None:
+            clf = make_classifier(cfg.detection.mode, cfg.detection.model_path)
+            self.detector = BarkDetector(cfg, clf, self.store, self.identifier, self.notify)
+            self._spawn(self._detect_loop, "detector")
+        self._spawn(self._maintenance_loop, "maintenance")
+
+    def _spawn(self, fn, name):
+        t = threading.Thread(target=fn, name=name, daemon=True)
+        t.start()
+        self.threads.append(t)
+
+    def _detect_loop(self):
+        while not self.stop.is_set():
+            try:
+                run_source(self.detector, self.source, self.stop)
+                if not getattr(self.source, "loop", True):
+                    log.info("Audio source finished")
+                    return
+            except Exception as e:  # noqa: BLE001  - mic unplugged etc.: log, wait, retry
+                self.error = f"{type(e).__name__}: {e}"
+                log.exception("Audio/detector error; retrying in 10s")
+                self.stop.wait(10)
+
+    def _maintenance_loop(self):
+        while not self.stop.is_set():
+            try:
+                enforce_retention(self.store, self.cfg.clips_path, self.cfg.clips.retention_days,
+                                  self.cfg.clips.max_disk_mb)
+            except Exception:  # noqa: BLE001
+                log.exception("Retention failed")
+            self.stop.wait(3600)
+
+    def retrain(self) -> dict:
+        if not self.identifier:
+            return {"trained": False, "reason": "identification disabled"}
+        return retrain_and_repredict(self.store, self.identifier)
+
+    def recover(self) -> None:
+        """Fix up episodes left open by a crash/power cut (and their unfinalised WAV headers)."""
+        rows = self.store.q("SELECT id, clip_path FROM episodes WHERE clip_seconds IS NULL")
+        for r in rows:
+            b = self.store.q1("SELECT COUNT(*) n, MAX(ts + duration) e, MAX(peak_db) p, MAX(prob) m"
+                              " FROM barks WHERE episode_id=?", (r["id"],))
+            if not b or not b["n"]:
+                path = self.store.delete_episode(r["id"])
+                if path:
+                    Path(path).unlink(missing_ok=True)
+                continue
+            secs = repair_wav(r["clip_path"]) if r["clip_path"] else None
+            self.store.finish_episode(r["id"], b["e"], b["n"], b["p"], b["m"], secs or 0.0)
+            log.info("Recovered unfinished episode %d", r["id"])
+
+    def notify(self, ep: dict) -> None:
+        n = self.cfg.notify
+        if not n.webhook_url or ep["duration"] < n.min_duration:
+            return
+        names = {str(d["id"]): d["name"] for d in self.store.dogs()}
+        dogs = {names.get(k, "unknown"): v for k, v in ep["dogs"].items() if k != "0"}
+        payload = {**ep, "dogs": dogs,
+                   "message": f"Barking for {ep['duration']:.0f}s ({ep['barks']} barks)"
+                              + (f": {', '.join(dogs)}" if dogs else "")}
+
+        def send():
+            try:
+                req = urllib.request.Request(n.webhook_url, data=json.dumps(payload).encode(),
+                                             headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=10).read()
+            except Exception as e:  # noqa: BLE001
+                log.warning("Webhook failed: %s", e)
+        threading.Thread(target=send, daemon=True).start()
+
+    def shutdown(self):
+        self.stop.set()
+        if self.detector:
+            try:
+                self.detector.flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def repair_wav(path: str) -> float | None:
+    """Rewrite RIFF sizes from the real file length (16-bit mono 16 kHz clips we wrote)."""
+    import os
+    import struct
+    try:
+        size = os.path.getsize(path)
+        if size < 44:
+            return None
+        with open(path, "r+b") as f:
+            f.seek(4)
+            f.write(struct.pack("<I", size - 8))
+            f.seek(40)
+            f.write(struct.pack("<I", size - 44))
+        return (size - 44) / 2 / 16000
+    except OSError:
+        return None

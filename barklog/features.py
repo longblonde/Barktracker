@@ -1,0 +1,165 @@
+"""Pure-numpy audio features: log-mel spectrograms and a compact per-bark 'voiceprint'."""
+from __future__ import annotations
+
+from functools import lru_cache
+
+import numpy as np
+
+SR = 16000
+N_FFT = 512
+HOP = 160          # 10 ms
+N_MELS = 40
+FMIN, FMAX = 80.0, 7600.0
+
+
+def _hz_to_mel(f):
+    return 2595.0 * np.log10(1.0 + np.asarray(f) / 700.0)
+
+
+def _mel_to_hz(m):
+    return 700.0 * (10 ** (np.asarray(m) / 2595.0) - 1.0)
+
+
+@lru_cache(maxsize=4)
+def mel_filterbank(n_mels: int = N_MELS, n_fft: int = N_FFT, sr: int = SR,
+                   fmin: float = FMIN, fmax: float = FMAX) -> np.ndarray:
+    mels = np.linspace(_hz_to_mel(fmin), _hz_to_mel(fmax), n_mels + 2)
+    hz = _mel_to_hz(mels)
+    bins = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    fb = np.zeros((n_mels, len(bins)), dtype=np.float32)
+    for i in range(n_mels):
+        lo, mid, hi = hz[i], hz[i + 1], hz[i + 2]
+        up = (bins - lo) / max(mid - lo, 1e-6)
+        down = (hi - bins) / max(hi - mid, 1e-6)
+        fb[i] = np.maximum(0, np.minimum(up, down))
+    fb /= np.maximum(fb.sum(axis=1, keepdims=True), 1e-9)
+    return fb
+
+
+@lru_cache(maxsize=4)
+def _window(n: int) -> np.ndarray:
+    return np.hanning(n).astype(np.float32)
+
+
+def power_spectrogram(x: np.ndarray, n_fft: int = N_FFT, hop: int = HOP) -> np.ndarray:
+    """Returns (frames, n_fft//2+1) power spectrum."""
+    x = np.asarray(x, dtype=np.float32)
+    if len(x) < n_fft:
+        x = np.pad(x, (0, n_fft - len(x)))
+    n_frames = 1 + (len(x) - n_fft) // hop
+    idx = np.arange(n_fft)[None, :] + hop * np.arange(n_frames)[:, None]
+    frames = x[idx] * _window(n_fft)
+    return (np.abs(np.fft.rfft(frames, axis=1)) ** 2).astype(np.float32)
+
+
+def log_mel(x: np.ndarray) -> np.ndarray:
+    """(frames, N_MELS) log-mel energies in dB."""
+    p = power_spectrogram(x)
+    m = p @ mel_filterbank().T
+    return 10.0 * np.log10(m + 1e-10)
+
+
+def dbfs(x: np.ndarray) -> float:
+    rms = float(np.sqrt(np.mean(np.square(x, dtype=np.float64)) + 1e-12))
+    return 20.0 * np.log10(rms + 1e-12)
+
+
+FEATURE_DIM = N_MELS * 2 + 8
+
+
+def bark_features(x: np.ndarray) -> np.ndarray:
+    """A fixed-length descriptor of one bark (~0.2-1.0 s of 16 kHz audio).
+
+    Uses only the loud frames so silence around the bark doesn't dominate.
+    Captures timbre (mel mean/std), brightness, tonality, pitch and length,
+    which is what tends to differ between individual dogs.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    p = power_spectrogram(x)
+    mel = 10.0 * np.log10(p @ mel_filterbank().T + 1e-10)
+    frame_db = 10.0 * np.log10(p.sum(axis=1) + 1e-10)
+    loud = frame_db > (frame_db.max() - 15.0)
+    if loud.sum() < 2:
+        loud[:] = True
+    mel_l, p_l = mel[loud], p[loud]
+
+    # Normalise for loudness so distance from the mic matters less.
+    mel_norm = mel_l - mel_l.mean(axis=1, keepdims=True)
+    mel_mean = mel_norm.mean(axis=0)
+    mel_std = mel_norm.std(axis=0)
+
+    freqs = np.fft.rfftfreq(N_FFT, 1.0 / SR)
+    psum = p_l.sum(axis=1) + 1e-10
+    centroid = (p_l * freqs).sum(axis=1) / psum
+    bandwidth = np.sqrt((p_l * (freqs[None, :] - centroid[:, None]) ** 2).sum(axis=1) / psum)
+    flatness = np.exp(np.mean(np.log(p_l + 1e-10), axis=1)) / (np.mean(p_l, axis=1) + 1e-10)
+    cumsum = np.cumsum(p_l, axis=1)
+    rolloff = freqs[np.argmax(cumsum >= 0.85 * cumsum[:, -1:], axis=1)]
+
+    f0, voiced = estimate_pitch(x)
+    duration = loud.sum() * HOP / SR
+
+    extra = np.array([
+        np.log1p(np.median(centroid)) , np.log1p(np.median(bandwidth)),
+        float(np.median(flatness)), np.log1p(np.median(rolloff)),
+        np.log1p(f0), voiced, duration, float(np.std(frame_db[loud]) / 10.0),
+    ], dtype=np.float32)
+    return np.concatenate([mel_mean, mel_std, extra]).astype(np.float32)
+
+
+def estimate_pitch(x: np.ndarray, fmin: float = 150.0, fmax: float = 1500.0) -> tuple[float, float]:
+    """Autocorrelation pitch on the loudest 64 ms. Returns (f0_hz, voicing 0-1)."""
+    n = 1024
+    if len(x) < n:
+        x = np.pad(x, (0, n - len(x)))
+    # loudest window
+    e = np.convolve(np.square(x), np.ones(n, dtype=np.float32), mode="valid")
+    start = int(np.argmax(e))
+    seg = x[start:start + n] * _window(n)
+    seg = seg - seg.mean()
+    spec = np.fft.rfft(seg, 2 * n)
+    ac = np.fft.irfft(np.abs(spec) ** 2)[:n]
+    if ac[0] <= 0:
+        return 0.0, 0.0
+    ac = ac / ac[0]
+    lo, hi = int(SR / fmax), int(SR / fmin)
+    lag = lo + int(np.argmax(ac[lo:hi]))
+    return float(SR / lag), float(max(0.0, ac[lag]))
+
+
+def resample(x: np.ndarray, sr_in: int, sr_out: int = SR) -> np.ndarray:
+    if sr_in == sr_out:
+        return x.astype(np.float32, copy=False)
+    n_out = int(round(len(x) * sr_out / sr_in))
+    if sr_in > sr_out:
+        # crude anti-alias: moving average over the decimation factor
+        k = max(1, int(round(sr_in / sr_out)))
+        if k > 1:
+            x = np.convolve(x, np.ones(k, dtype=np.float32) / k, mode="same")
+    t_in = np.arange(len(x)) / sr_in
+    t_out = np.arange(n_out) / sr_out
+    return np.interp(t_out, t_in, x).astype(np.float32)
+
+
+def spectrogram_image(x: np.ndarray, width: int = 900, height: int = 96,
+                      fmax: float = 6000.0) -> tuple[np.ndarray, float]:
+    """Compact uint8 (height, width) spectrogram for the dashboard. Low freq at row 0."""
+    p = power_spectrogram(x, n_fft=512, hop=max(80, len(x) // max(width, 1)))
+    freqs = np.fft.rfftfreq(512, 1.0 / SR)
+    p = p[:, freqs <= fmax]
+    db = 10 * np.log10(p + 1e-10)
+    # log-ish frequency axis via mel band resampling
+    n_bins = p.shape[1]
+    mel_edges = _mel_to_hz(np.linspace(_hz_to_mel(60), _hz_to_mel(fmax), height + 1))
+    bin_idx = np.clip(np.searchsorted(freqs[:n_bins], mel_edges), 0, n_bins - 1)
+    rows = np.stack([db[:, bin_idx[i]:max(bin_idx[i + 1], bin_idx[i] + 1)].max(axis=1)
+                     for i in range(height)], axis=0)  # (height, frames)
+    # time resample to width
+    if rows.shape[1] != width and rows.shape[1] > 1:
+        t = np.linspace(0, rows.shape[1] - 1, width)
+        i0 = np.floor(t).astype(int)
+        rows = rows[:, i0]
+    hi = np.percentile(rows, 99.5)
+    lo = hi - 70
+    img = np.clip((rows - lo) / (hi - lo), 0, 1)
+    return (img * 255).astype(np.uint8), len(x) / SR

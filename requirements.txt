@@ -1,0 +1,7 @@
+numpy>=1.24
+sounddevice>=0.4.6
+fastapi>=0.110
+uvicorn>=0.27
+pyyaml>=6.0
+# Optional, for the YAMNet bark model (install.sh tries these automatically):
+#   ai-edge-litert   or   tflite-runtime
