@@ -2,11 +2,11 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from barklog import synth
-from barklog.app import BarkApp
-from barklog.classifier import HeuristicClassifier
-from barklog.config import Config
-from barklog.detector import BarkDetector
+from barktracker import synth
+from barktracker.app import BarkApp
+from barktracker.classifier import HeuristicClassifier
+from barktracker.config import Config
+from barktracker.detector import BarkDetector
 
 
 @pytest.fixture
@@ -19,14 +19,14 @@ def client(tmp_path):
     ev = synth.bout(2.0, "Big dog", 5, rng=rng) + synth.bout(30.0, "Small dog", 5, rng=rng)
     det.feed(synth.scene(ev, 45.0, seed=3), time.time() - 3600)
     det.flush()
-    from barklog.web import create_app
+    from barktracker.web import create_app
     yield TestClient(create_app(app)), app
     app.shutdown()
 
 
 def test_dashboard_flow(client):
     c, app = client
-    assert "barklog" in c.get("/").text
+    assert "barktracker" in c.get("/").text
     s = c.get("/api/status").json()
     assert s["counts"]["episodes"] == 2
     eps = c.get("/api/episodes").json()
@@ -59,7 +59,7 @@ def test_dashboard_flow(client):
 
 
 def test_basic_auth(tmp_path):
-    from barklog.web import create_app
+    from barktracker.web import create_app
     cfg = Config(data_dir=str(tmp_path))
     cfg.web.username, cfg.web.password = "me", "secret"
     app = BarkApp(cfg, None, start_detector=False)

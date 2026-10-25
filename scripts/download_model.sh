@@ -19,5 +19,5 @@ for u in "${URLS[@]}"; do
   fi
   rm -f "$OUT.tmp"
 done
-echo "Could not download YAMNet. Barklog will run with the basic detector." >&2
+echo "Could not download YAMNet. Barktracker will run with the basic detector." >&2
 exit 1

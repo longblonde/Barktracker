@@ -37,7 +37,7 @@ def list_devices() -> str:
 
 
 class MicSource:
-    def __init__(self, device=None, samplerate: int = 16000, channels: int = 1,
+    def __init__(self, device="auto", samplerate: int = 16000, channels: int = 0,
                  block_seconds: float = 0.05, gain_db: float = 0.0):
         self.device = device
         self.sr = samplerate
@@ -47,15 +47,28 @@ class MicSource:
         self.gain = 10 ** (gain_db / 20)
         self.q: queue.Queue = queue.Queue(maxsize=2000)
         self.overflows = 0
+        self.device_name = None
+
+    # Names USB webcams/mics show up as in ALSA, best first (Logitech C920/C922/C930e/Brio, etc.)
+    AUTO_PATTERNS = ("c920", "c922", "c930", "brio", "logitech", "webcam", "camera", "usb")
 
     def _resolve_device(self):
+        import sounddevice as sd
         if self.device is None or isinstance(self.device, int):
             return self.device
         if str(self.device).isdigit():
             return int(self.device)
-        import sounddevice as sd
-        for i, d in enumerate(sd.query_devices()):
-            if d["max_input_channels"] > 0 and str(self.device).lower() in d["name"].lower():
+        inputs = [(i, d) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
+        if str(self.device).lower() == "auto":
+            for pat in self.AUTO_PATTERNS:
+                for i, d in inputs:
+                    if pat in d["name"].lower():
+                        log.info("Auto-selected input device %d: %s", i, d["name"])
+                        return i
+            log.info("No USB webcam/mic found; using the default input")
+            return None
+        for i, d in inputs:
+            if str(self.device).lower() in d["name"].lower():
                 return i
         raise ValueError(f"No input device matching {self.device!r}. Devices:\n{sd.query_devices()}")
 
@@ -71,14 +84,18 @@ class MicSource:
                 self.overflows += 1
 
         dev = self._resolve_device()
+        info = sd.query_devices(dev, "input")
+        self.device_name = info.get("name", "default")
+        if not self.channels:   # 0 = auto: webcams are usually stereo; we mix down to mono
+            self.channels = max(1, min(2, int(info["max_input_channels"])))
         try:
             sd.check_input_settings(device=dev, samplerate=self.sr, channels=self.channels, dtype="float32")
-        except Exception as e:  # noqa: BLE001 - many USB mics only do 44.1/48 kHz
-            native = int(sd.query_devices(dev, "input")["default_samplerate"])
+        except Exception as e:  # noqa: BLE001 - many webcams only do 32/44.1/48 kHz
+            native = int(info["default_samplerate"])
             log.warning("Input doesn't support %d Hz (%s); using %d Hz and resampling", self.sr, e, native)
             self.sr = native
             self.block = int(native * self.block_seconds)
-        log.info("Opening input device %s @ %d Hz", dev if dev is not None else "default", self.sr)
+        log.info("Opening input %s (%d ch) @ %d Hz", self.device_name, self.channels, self.sr)
         with sd.InputStream(device=dev, samplerate=self.sr, channels=self.channels, dtype="float32",
                             blocksize=self.block, callback=cb):
             while True:

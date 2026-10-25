@@ -1,14 +1,16 @@
-# Barklog configuration. Copy to config.yaml (the installer does this) and edit.
-# Restart after changes:  sudo systemctl restart barklog
+# Barktracker configuration. Copy to config.yaml (the installer does this) and edit.
+# Restart after changes:  sudo systemctl restart barktracker
 # Every key is optional; anything left out uses the default shown here.
 
 data_dir: data                 # database + clips (relative to this file)
 timezone: null                 # e.g. America/Chicago. null = the Pi's system time zone
 
 audio:
-  device: null                 # null = default input. Or part of the name ("USB") or an index.
-                               # List devices with:  .venv/bin/python -m barklog devices
-  samplerate: 16000            # use 48000 or 44100 if your mic refuses 16000
+  device: auto                 # auto = first USB webcam/mic found (Logitech C920/C922/Brio...).
+                               # Or part of a name ("C920"), an index, or null for the system default.
+                               # List devices with:  .venv/bin/python -m barktracker devices
+  samplerate: 16000            # falls back to the mic's own rate (e.g. 32000/48000) automatically
+  channels: 0                  # 0 = auto; webcam stereo is mixed to mono
   gain_db: 0                   # software boost for quiet mics (try 6-12)
 
 detection:
@@ -40,5 +42,5 @@ web:
   password: null
 
 notify:
-  webhook_url: null            # POSTs JSON when an episode ends, e.g. https://ntfy.sh/my-barklog
+  webhook_url: null            # POSTs JSON when an episode ends, e.g. https://ntfy.sh/my-barktracker
   min_duration: 30             # only for episodes at least this long (seconds)

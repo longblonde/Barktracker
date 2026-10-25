@@ -1,4 +1,4 @@
-"""Command line entry point:  python -m barklog <command>"""
+"""Command line entry point:  python -m barktracker <command>"""
 from __future__ import annotations
 
 import argparse
@@ -38,7 +38,7 @@ def cmd_run(args, cfg):
         bark.shutdown()
         sys.exit(0)
     signal.signal(signal.SIGTERM, bye)
-    logging.getLogger("barklog").info("Dashboard on http://%s:%d", cfg.web.host, cfg.web.port)
+    logging.getLogger("barktracker").info("Dashboard on http://%s:%d", cfg.web.host, cfg.web.port)
     try:
         uvicorn.run(app, host=cfg.web.host, port=cfg.web.port, log_level="warning")
     finally:
@@ -107,7 +107,12 @@ def cmd_demo(args, cfg):
     store = bark.store
     names = list(synth.DOG_VOICES)
     existing = {d["name"]: d["id"] for d in store.dogs()}
-    ids = {n: existing.get(n) or store.add_dog(n)["id"] for n in names}
+    homes = {"Big dog": ("J. Smith", "123 Elm St", "Black lab, large"),
+             "Small dog": ("R. Lee", "9 Oak Ave", "White terrier mix")}
+    ids = {}
+    for n in names:
+        o, addr, desc = homes.get(n, ("", "", ""))
+        ids[n] = existing.get(n) or store.add_dog(n, owner=o, address=addr, description=desc)["id"]
     det = BarkDetector(cfg, HeuristicClassifier(), store, None)
     rng = np.random.default_rng(args.seed)
     now = datetime.now().replace(second=0, microsecond=0)
@@ -134,6 +139,21 @@ def cmd_demo(args, cfg):
             new = store.q("SELECT id FROM episodes WHERE id>?", (before,))
             for e in new:
                 truth.append((e["id"], who))
+    # a few long sessions (bursts with short pauses), some late at night
+    for day, hour, minute, mins in ((9, 22, 40, 14), (6, 13, 10, 12), (4, 23, 5, 11), (2, 21, 50, 25), (1, 6, 20, 9)):
+        t = (now - timedelta(days=day)).replace(hour=hour, minute=minute)
+        events, cur = [], 1.0
+        while cur < mins * 60:
+            events += synth.bout(cur, "Big dog", int(rng.integers(8, 25)), rng=rng)
+            cur = events[-1][0] + rng.uniform(10, 45)
+        total = events[-1][0] + 4
+        audio = synth.scene(events, total, seed=int(rng.integers(1e9)))
+        before = store.q1("SELECT COALESCE(MAX(id),0) m FROM episodes")["m"]
+        det.base_ts = t.timestamp() - det.received / F.SR
+        det.feed(audio, t.timestamp())
+        det.flush()
+        for e in store.q("SELECT id FROM episodes WHERE id>?", (before,)):
+            truth.append((e["id"], "Big dog"))
     # label about a third of the single-dog episodes so the identifier has something to learn from
     labelled = 0
     for eid, who in truth:
@@ -145,7 +165,7 @@ def cmd_demo(args, cfg):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="barklog", description="Raspberry Pi bark logger")
+    p = argparse.ArgumentParser(prog="barktracker", description="Raspberry Pi bark logger")
     p.add_argument("-c", "--config", help="path to config.yaml")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)

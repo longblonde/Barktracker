@@ -12,9 +12,10 @@ import yaml
 
 @dataclass
 class AudioConfig:
-    device: str | int | None = None      # None = system default input; name substring or index
-    samplerate: int = 16000              # capture rate; resampled to 16 kHz internally if different
-    channels: int = 1
+    device: str | int | None = "auto"    # auto = first USB webcam/mic (Logitech etc.); None = system default;
+                                         # or a name substring / index
+    samplerate: int = 16000              # capture rate; falls back to the device's native rate if refused
+    channels: int = 0                    # 0 = auto (webcams are stereo; mixed to mono)
     block_seconds: float = 0.05          # 50 ms analysis frames
     gain_db: float = 0.0                 # software gain applied before analysis
 
@@ -86,7 +87,7 @@ class Config:
 
     @property
     def db_path(self) -> Path:
-        return self.data_path / "barklog.db"
+        return self.data_path / "barktracker.db"
 
 
 def _merge(dc: Any, values: dict) -> Any:
@@ -104,7 +105,7 @@ def _merge(dc: Any, values: dict) -> Any:
 
 def load_config(path: str | os.PathLike | None = None) -> Config:
     cfg = Config()
-    candidates = [path] if path else [os.environ.get("BARKLOG_CONFIG"), "config.yaml"]
+    candidates = [path] if path else [os.environ.get("BARKTRACKER_CONFIG"), "config.yaml"]
     for cand in candidates:
         if cand and Path(cand).exists():
             with open(cand) as fh:

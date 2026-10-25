@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "barklog"
+name = "barktracker"
 version = "0.1.0"
 description = "Raspberry Pi bark detector and logger with a web dashboard"
 readme = "README.md"
@@ -16,13 +16,13 @@ model = ["ai-edge-litert"]
 dev = ["pytest", "httpx"]
 
 [project.scripts]
-barklog = "barklog.main:main"
+barktracker = "barktracker.main:main"
 
 [tool.setuptools.packages.find]
-include = ["barklog*"]
+include = ["barktracker*"]
 
 [tool.setuptools.package-data]
-barklog = ["static/*", "static/fonts/*"]
+barktracker = ["static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

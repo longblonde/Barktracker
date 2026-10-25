@@ -4,15 +4,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from barklog import features as F
-from barklog import synth
-from barklog.app import BarkApp, repair_wav
-from barklog.audio import read_wav
-from barklog.classifier import HeuristicClassifier, make_classifier
-from barklog.config import Config
-from barklog.detector import BarkDetector
-from barklog.identify import DogIdentifier, retrain_and_repredict
-from barklog.storage import NOT_BARK, Store
+from barktracker import features as F
+from barktracker import synth
+from barktracker.app import BarkApp, repair_wav
+from barktracker.audio import read_wav
+from barktracker.classifier import HeuristicClassifier, make_classifier
+from barktracker.config import Config
+from barktracker.detector import BarkDetector
+from barktracker.identify import DogIdentifier, retrain_and_repredict
+from barktracker.storage import NOT_BARK, Store
 
 MODEL = Path(__file__).resolve().parents[1] / "models" / "yamnet.tflite"
 T0 = 1_760_000_000.0

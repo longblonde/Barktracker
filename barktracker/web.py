@@ -7,18 +7,20 @@ import io
 import secrets
 import shutil
 import time
+import zipfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import features as F
+from . import ordinance as O
 from .app import BarkApp
 from .audio import read_wav
 from .storage import NOT_BARK
@@ -30,6 +32,9 @@ class DogIn(BaseModel):
     name: str | None = None
     color: str | None = None
     notes: str | None = None
+    owner: str | None = None
+    address: str | None = None
+    description: str | None = None
 
 
 class LabelIn(BaseModel):
@@ -59,7 +64,7 @@ def create_app(bark: BarkApp) -> FastAPI:
         if not ok:
             raise HTTPException(401, headers={"WWW-Authenticate": "Basic"})
 
-    app = FastAPI(title="Barklog", dependencies=[Depends(auth)], docs_url="/api/docs")
+    app = FastAPI(title="Barktracker", dependencies=[Depends(auth)], docs_url="/api/docs")
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     # ---- time helpers -------------------------------------------------------
@@ -126,6 +131,8 @@ def create_app(bark: BarkApp) -> FastAPI:
                          "bark_threshold": cfg.detection.bark_threshold,
                          "retention_days": cfg.clips.retention_days,
                          "timezone": cfg.timezone or "system"},
+            "clock": clock_status(),
+            "audio_device": getattr(bark.source, "device_name", None),
         }
 
     # ---- stats ----------------------------------------------------------------
@@ -172,7 +179,11 @@ def create_app(bark: BarkApp) -> FastAPI:
                         " JOIN episodes e ON e.id=b.episode_id WHERE b.ts>=? AND b.ts<? AND"
                         " e.false_positive=0 AND COALESCE(b.label_dog_id, b.pred_dog_id, -1) != 0",
                         (t0, t1))
+        th = O.get_ordinance(store)["thresholds"]
+        incs = O.build_incidents([{**e, "subject_barks": e["bark_count"]} for e in eps], th, O.Clock(cfg.timezone))
         return {"date": d.isoformat(), "start_ts": t0, "end_ts": t1,
+                "incidents": [{"start_ts": i["start_ts"], "end_ts": i["end_ts"], "flags": i["flags"],
+                               "duration": i["duration"]} for i in incs],
                 "episodes": [ep_view(e, split.get(e["id"], {})) for e in eps],
                 "barks": [[round(b["ts"], 2), b["dog_id"]] for b in barks]}
 
@@ -330,7 +341,8 @@ def create_app(bark: BarkApp) -> FastAPI:
     @app.post("/api/dogs")
     def add_dog(body: DogIn):
         try:
-            return store.add_dog(body.name or "", body.color, body.notes or "")
+            return store.add_dog(body.name or "", body.color, body.notes or "", body.owner or "",
+                                 body.address or "", body.description or "")
         except Exception as e:  # noqa: BLE001
             raise HTTPException(400, str(e))
 
@@ -370,6 +382,131 @@ def create_app(bark: BarkApp) -> FastAPI:
                         round(e["end_ts"] - e["start_ts"], 1), e["bark_count"], dogs_s,
                         e["reviewed"], e["note"] or ""])
         return Response(buf.getvalue(), media_type="text/csv",
-                        headers={"Content-Disposition": "attachment; filename=barklog.csv"})
+                        headers={"Content-Disposition": "attachment; filename=barktracker.csv"})
+
+    # ---- ordinance & complaint reports ----------------------------------------
+    @app.get("/api/ordinance")
+    def ordinance():
+        o = O.get_ordinance(store)
+        return {"ordinance": o, "criteria": O.describe_thresholds(o["thresholds"]),
+                "presets": [{"id": k, "label": v} for k, v in O.PRESET_LABELS.items()],
+                "reporter": O.get_reporter(store)}
+
+    @app.put("/api/ordinance")
+    def put_ordinance(body: dict = Body(...)):
+        try:
+            O.save_ordinance(store, body)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, f"Invalid value: {e}")
+        return ordinance()
+
+    @app.put("/api/reporter")
+    def put_reporter(body: dict = Body(...)):
+        return O.save_reporter(store, body)
+
+    @app.get("/api/subjects")
+    def subjects():
+        return O.subject_options(store)
+
+    def _report(dog, address, d_from, d_to, confirmed, flagged):
+        d1 = date.fromisoformat(d_to) if d_to else today()
+        d0 = date.fromisoformat(d_from) if d_from else d1 - timedelta(days=29)
+        if d0 > d1:
+            raise HTTPException(400, "The start date is after the end date")
+        if (d1 - d0).days > 366:
+            raise HTTPException(400, "Reports can cover at most one year")
+        return O.build_report(store, cfg.timezone, d0, d1, dog_id=dog, address=address,
+                              confirmed_only=confirmed, flagged_only=flagged)
+
+    @app.get("/api/report")
+    def report(dog: int | None = None, address: str | None = None,
+               d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
+               confirmed: bool = False, flagged: bool = False):
+        return _report(dog, address, d_from, d_to, confirmed, flagged)
+
+    def _slug(rep):
+        t = rep["subject"]["title"] if rep["subject"]["kind"] != "all" else "all-dogs"
+        t = "".join(c if c.isalnum() else "-" for c in t.lower()).strip("-")
+        while "--" in t:
+            t = t.replace("--", "-")
+        return f"barktracker-{t}-{rep['period']['from']}-to-{rep['period']['to']}"
+
+    @app.get("/api/report.csv")
+    def report_csv(dog: int | None = None, address: str | None = None,
+                   d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
+                   confirmed: bool = False, flagged: bool = False, kind: str = "incidents"):
+        rep = _report(dog, address, d_from, d_to, confirmed, flagged)
+        body = render_csv(rep, kind)
+        name = f"{_slug(rep)}-{'daily' if kind == 'daily' else 'incidents'}.csv"
+        return Response(body.encode("utf-8-sig"), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.get("/api/report/clips.zip")
+    def report_zip(dog: int | None = None, address: str | None = None,
+                   d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
+                   confirmed: bool = False, flagged: bool = False):
+        rep = _report(dog, address, d_from, d_to, confirmed, flagged)
+        slug = _slug(rep)
+        buf = io.BytesIO()
+        ids = [eid for i in rep["incidents"] for eid in i["episode_ids"]]
+        paths = {r["id"]: r["clip_path"] for r in store.q(
+            f"SELECT id, clip_path FROM episodes WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)}
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr(f"{slug}/incidents.csv", render_csv(rep, "incidents").encode("utf-8-sig"))
+            z.writestr(f"{slug}/daily.csv", render_csv(rep, "daily").encode("utf-8-sig"))
+            for inc in rep["incidents"]:
+                for eid in inc["episode_ids"]:
+                    p = paths.get(eid)
+                    if p and Path(p).exists():
+                        z.write(p, f"{slug}/clips/incident-{inc['number']:03d}_{Path(p).name}")
+        return Response(buf.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{slug}.zip"'})
 
     return app
+
+
+def render_csv(rep: dict, kind: str = "incidents") -> str:
+    """One clean table, header row first, no preamble, so it opens directly in Excel/Sheets."""
+    tz = rep["timezone"]
+    labels = rep["flag_labels"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    subject = rep["subject"]["kind"] != "all"
+    if kind == "daily":
+        w.writerow(["Date", "Day", "Incidents", "Total barking (m:ss)", "Total barking (seconds)",
+                    "Barks", "Minutes during quiet hours", "Meets criteria"])
+        for d in rep["days"]:
+            dt = date.fromisoformat(d["date"])
+            flags = list(d["flags"]) + (["Incident criteria"] if d["flagged_incidents"] else [])
+            w.writerow([d["date"], dt.strftime("%a"), d["incidents"], O.fmt_dur(d["seconds"]),
+                        round(d["seconds"]), d["barks"], round(d["quiet_seconds"] / 60, 1),
+                        "; ".join(labels.get(f, f) for f in flags)])
+        return buf.getvalue()
+    head = ["Incident", "Date", "Day", f"Start ({tz})", f"End ({tz})", "Duration (m:ss)",
+            "Duration (seconds)", "Total barks"]
+    if subject:
+        head += ["Barks by " + rep["subject"]["title"], "Identification"]
+    head += ["Dogs heard", "Minutes during quiet hours", "Incident meets", "Day meets", "Clip files", "Notes"]
+    w.writerow(head)
+    for i in rep["incidents"]:
+        row = [i["number"], i["date"], i["weekday"], i["start"], i["end"], O.fmt_dur(i["duration"]),
+               round(i["duration"]), i["barks"]]
+        if subject:
+            row += [i["subject_barks"], {"confirmed": "Confirmed by reviewer", "automatic": "Automatic match",
+                                         "mixed": "Partly confirmed"}.get(i["identified"], "")]
+        row += ["; ".join(f"{k} x{v}" for k, v in i["dogs"].items()), round(i["quiet_seconds"] / 60, 1),
+                "; ".join(labels.get(f, f) for f in i["flags"]), "; ".join(labels.get(f, f) for f in i["day_flags"]),
+                "; ".join(i["clips"]), i["notes"]]
+        w.writerow(row)
+    return buf.getvalue()
+
+
+def clock_status() -> dict:
+    """Is the system clock NTP-synchronised? Matters for the credibility of timestamps."""
+    import subprocess
+    try:
+        out = subprocess.run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+                             capture_output=True, text=True, timeout=2).stdout.strip()
+        return {"ntp_synced": out == "yes" if out else None}
+    except (OSError, subprocess.SubprocessError):
+        return {"ntp_synced": None}

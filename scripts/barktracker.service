@@ -1,5 +1,5 @@
 [Unit]
-Description=Barklog bark detector and dashboard
+Description=Barktracker bark detector and dashboard
 After=network-online.target sound.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ User=@USER@
 SupplementaryGroups=audio
 WorkingDirectory=@DIR@
 Environment=PYTHONUNBUFFERED=1
-ExecStart=@DIR@/.venv/bin/python -m barklog -c @DIR@/config.yaml run
+ExecStart=@DIR@/.venv/bin/python -m barktracker -c @DIR@/config.yaml run
 Restart=always
 RestartSec=5
 Nice=-5

@@ -1,5 +1,5 @@
 "use strict";
-// Barklog dashboard — vanilla JS, no build step, works offline on the LAN.
+// Barktracker dashboard — vanilla JS, no build step, works offline on the LAN.
 
 const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
@@ -129,7 +129,7 @@ function navigate() {
   const navName = route.name === "clip" ? "clips" : route.name;
   $(`[data-nav="${navName}"]`)?.setAttribute("aria-current", "page");
   player.pause(); resetBtn();
-  ({ overview: renderOverview, clips: renderClips, clip: renderClip, dogs: renderDogs, system: renderSystem }[route.name] || renderOverview)();
+  ({ overview: renderOverview, clips: renderClips, clip: renderClip, dogs: renderDogs, report: renderReport, ordinance: renderOrdinance, system: renderSystem }[route.name] || renderOverview)();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", navigate);
@@ -169,10 +169,13 @@ async function renderOverview(soft = false) {
     if (top.length && top[0][0] !== "u" && total > 0) {
       detail += ` ${dogName(top[0][0])} did ${Math.round((100 * top[0][1]) / total)}% of it.`;
     }
+    const hits = (day.incidents || []).filter((i) => i.flags.length).length;
+    if (hits) detail += ` ${hits} incident${hits === 1 ? "" : "s"} met your ordinance criteria.`;
   }
   const cw = chartWidths();
   const dogsSeen = new Set([...Object.keys(perDog)]);
-  const legend = [...dogsSeen].map((k) => `<span style="--c:${dogColor(k)}">${esc(dogName(k))}</span>`).join("");
+  let legend = [...dogsSeen].map((k) => `<span style="--c:${dogColor(k)}">${esc(dogName(k))}</span>`).join("");
+  if ((day.incidents || []).some((i) => i.flags.length)) legend += `<span style="--c:var(--danger)"><a href="#/report">Meets ordinance criteria</a></span>`;
 
   view.innerHTML = `
     <section class="hero">
@@ -226,6 +229,11 @@ function stripSvg(day, isToday, W = 1000) {
     const w = Math.max(3, x(e.end_ts) - x(e.start_ts));
     const label = `${fmtTime(e.start_ts)} · ${fmtDur(e.duration)} · ${e.bark_count} barks`;
     g += `<a href="#/clip/${e.id}" aria-label="${esc(label)}"><rect x="${x(e.start_ts)}" y="16" width="${w}" height="42" rx="2" fill="${dogColor(dominant(e.dogs))}"><title>${esc(label)}</title></rect></a>`;
+  }
+  for (const inc of day.incidents || []) {
+    if (!inc.flags.length) continue;
+    const w = Math.max(4, x(inc.end_ts) - x(inc.start_ts));
+    g += `<rect x="${x(inc.start_ts)}" y="10" width="${w}" height="3" fill="var(--danger)"><title>${esc(inc.flags.map((f) => FLAG_NAMES[f]).join(", "))}</title></rect>`;
   }
   for (const [ts, d] of day.barks) g += `<line x1="${x(ts)}" x2="${x(ts)}" y1="62" y2="70" stroke="${dogColor(d == null ? "u" : String(d))}" stroke-width="1.5"/>`;
   if (isToday) {
@@ -467,29 +475,42 @@ async function renderDogs() {
   if (route.name !== "dogs") return;
   const st = await api("/api/status");
   const need = r.min_labels;
+  const addrs = [...new Set(r.dogs.map((d) => d.address).filter(Boolean))];
   view.innerHTML = `
     <section>
       <h1>Dogs</h1>
-      <p class="sub" style="max-width:62ch">Add each dog, then label a few clips per dog. After ${need} or more labelled barks a dog, new barks are matched to the closest voice automatically. More labels from different days make it more reliable.</p>
+      <p class="sub" style="max-width:64ch">Add each dog you hear, with its owner and address if it's a neighbor's. Label a few clips per dog; after ${need} or more labelled barks, new barks are matched to the closest voice automatically. Dogs at the same address are grouped together on complaint reports.</p>
     </section>
+    <datalist id="addrList">${addrs.map((a) => `<option value="${esc(a)}">`).join("")}</datalist>
     <section class="list" id="dogList">
       ${r.dogs.length ? r.dogs.map((d) => `
         <div class="dogcard" style="--c:${d.color}">
           <input type="color" value="${d.color}" data-color="${d.id}" aria-label="Color for ${esc(d.name)}">
           <div>
-            <input class="name" value="${esc(d.name)}" data-name="${d.id}" aria-label="Name">
-            <div class="small muted">${d.labelled_barks} labelled · ${d.predicted_barks} matched automatically</div>
+            <input class="name" value="${esc(d.name)}" data-field="name" data-id="${d.id}" aria-label="Name">
+            <div class="small muted">${d.labelled_barks} labelled, ${d.predicted_barks} matched automatically${d.address ? ` · ${esc(d.address)}` : ""}</div>
             <div class="meter" title="${Math.min(d.labelled_barks, need)} of ${need} labels needed to start matching"><b style="width:${Math.min(100, (100 * d.labelled_barks) / need)}%"></b></div>
+            <details class="dogmore">
+              <summary>Owner and address</summary>
+              <div class="fields">
+                <label>Owner<input type="text" value="${esc(d.owner)}" data-field="owner" data-id="${d.id}" placeholder="e.g. J. Smith"></label>
+                <label>Address<input type="text" list="addrList" value="${esc(d.address)}" data-field="address" data-id="${d.id}" placeholder="e.g. 123 Elm St"></label>
+                <label class="wide">Description<input type="text" value="${esc(d.description)}" data-field="description" data-id="${d.id}" placeholder="Breed, color, size"></label>
+              </div>
+            </details>
           </div>
           <div class="row">
             <a class="btn" href="#/clips" data-filter="${d.id}">Clips</a>
+            <a class="btn" href="#/report" data-report="${d.id}">Report</a>
             <button class="btn danger" data-del="${d.id}">Remove</button>
           </div>
         </div>`).join("") : `<div class="empty"><strong>No dogs yet</strong>Add one below. Barks are still logged without dogs; they just show as unidentified.</div>`}
     </section>
     <section>
-      <form class="row" id="addDog">
-        <input type="text" id="newName" placeholder="Dog's name" required maxlength="40" aria-label="Dog's name">
+      <form class="addform" id="addDog">
+        <label>Dog's name<input type="text" id="newName" required maxlength="40" placeholder="Rex"></label>
+        <label>Owner (optional)<input type="text" id="newOwner" maxlength="80"></label>
+        <label>Address (optional)<input type="text" id="newAddr" list="addrList" maxlength="120"></label>
         <button class="btn primary" type="submit">Add dog</button>
       </form>
     </section>
@@ -499,11 +520,15 @@ async function renderDogs() {
     </section>`;
   $("#addDog").onsubmit = async (ev) => {
     ev.preventDefault();
-    try { await api("/api/dogs", { method: "POST", body: { name: $("#newName").value } }); toast("Dog added"); renderDogs(); }
-    catch (e) { toast(e.message.includes("UNIQUE") ? "There's already a dog with that name" : e.message); }
+    try {
+      await api("/api/dogs", { method: "POST", body: { name: $("#newName").value, owner: $("#newOwner").value, address: $("#newAddr").value } });
+      toast("Dog added"); renderDogs();
+    } catch (e) { toast(e.message.includes("UNIQUE") ? "There's already a dog with that name" : e.message); }
   };
-  view.querySelectorAll("[data-name]").forEach((i) => i.addEventListener("change", async () => {
-    await api(`/api/dogs/${i.dataset.name}`, { method: "PATCH", body: { name: i.value } }); toast("Name saved");
+  view.querySelectorAll("[data-field]").forEach((i) => i.addEventListener("change", async () => {
+    await api(`/api/dogs/${i.dataset.id}`, { method: "PATCH", body: { [i.dataset.field]: i.value } });
+    toast(`${i.dataset.field === "name" ? "Name" : i.dataset.field[0].toUpperCase() + i.dataset.field.slice(1)} saved`);
+    if (i.dataset.field === "address") loadDogs();
   }));
   view.querySelectorAll("[data-color]").forEach((i) => i.addEventListener("change", async () => {
     await api(`/api/dogs/${i.dataset.color}`, { method: "PATCH", body: { color: i.value } }); renderDogs();
@@ -514,6 +539,219 @@ async function renderDogs() {
     await api(`/api/dogs/${d.id}`, { method: "DELETE" }); toast(`${d.name} removed`); renderDogs();
   }));
   view.querySelectorAll("[data-filter]").forEach((a) => a.addEventListener("click", () => { S.clipFilters = { ...S.clipFilters, dog: a.dataset.filter, offset: 0 }; }));
+  view.querySelectorAll("[data-report]").forEach((a) => a.addEventListener("click", () => { S.report = { ...(S.report || {}), subject: `dog:${a.dataset.report}` }; }));
+}
+
+// -------------------------------------------------------------- ordinance
+async function renderOrdinance() {
+  const r = await api("/api/ordinance");
+  if (route.name !== "ordinance") return;
+  const o = r.ordinance, th = o.thresholds;
+  const num = (k, label, unit, step = 1) => `<label>${label}<span class="unit"><input type="number" min="0" step="${step}" name="${k}" value="${th[k]}" required>${unit}</span></label>`;
+  view.innerHTML = `
+    <section>
+      <h1>Noise ordinance</h1>
+      <p class="sub" style="max-width:64ch">The local rule your complaint reports cite, and the criteria Barktracker uses to highlight incidents worth reporting. Defaults are for ${esc(o.jurisdiction)}.</p>
+    </section>
+    <form id="ordForm">
+      <section class="panel form">
+        <div class="row spread"><h2>The rule</h2>
+          <div class="row"><label class="inline">Preset <select id="preset">${r.presets.map((p) => `<option value="${p.id}" ${p.id === o.preset ? "selected" : ""}>${esc(p.label)}</option>`).join("")}<option value="custom" ${r.presets.some((p) => p.id === o.preset) ? "" : "selected"}>Custom</option></select></label>
+          <button type="button" class="btn" id="resetOrd">Reset to preset</button></div></div>
+        <label>Jurisdiction<input type="text" name="jurisdiction" value="${esc(o.jurisdiction)}"></label>
+        <label>Code section<input type="text" name="code_section" value="${esc(o.code_section)}"></label>
+        <label>What the rule says (in plain words)<textarea name="rule_text" rows="3">${esc(o.rule_text)}</textarea></label>
+        <label>Notes<textarea name="rule_note" rows="3">${esc(o.rule_note)}</textarea></label>
+        <div class="two">
+          <label>Source link<input type="url" name="source_url" value="${esc(o.source_url)}"></label>
+          <label>Penalty<input type="text" name="penalty" value="${esc(o.penalty)}"></label>
+        </div>
+        ${o.source_url ? `<p class="small muted" style="margin:0"><a href="${esc(o.source_url)}" target="_blank" rel="noopener">Read the code on the city's site</a>. Check it before filing; codes change.</p>` : ""}
+      </section>
+
+      <section class="panel form">
+        <h2>Criteria for flagging incidents</h2>
+        <p class="small muted" style="margin:0 0 6px">${o.preset === "burnsville_mn" ? "Burnsville's code says “habitually or frequently” without numbers, so these are your documentation criteria, not legal limits." : "Set these to match your ordinance, or to what you consider reportable."} Barking separated by pauses no longer than the break setting counts as one incident.</p>
+        <div class="grid3">
+          ${num("sustained_minutes", "Sustained barking", "minutes or longer")}
+          ${num("max_pause_seconds", "Allowed break within an incident", "seconds")}
+          ${num("daily_minutes", "Frequent day", "minutes in a day")}
+          <label>Quiet hours start<input type="time" name="quiet_start" value="${th.quiet_start}" required></label>
+          <label>Quiet hours end<input type="time" name="quiet_end" value="${th.quiet_end}" required></label>
+          ${num("quiet_minutes", "Flag during quiet hours after", "minutes")}
+          ${num("habitual_days", "Habitual pattern", "days meeting a criterion")}
+          ${num("habitual_window_days", "…within", "days")}
+        </div>
+        <ul class="criteria">${Object.entries(r.criteria).map(([k, v]) => `<li><strong>${FLAG_NAMES[k]}</strong>: ${esc(v)}</li>`).join("")}</ul>
+      </section>
+
+      <section class="panel form">
+        <h2>Where to report</h2>
+        <p class="small muted" style="margin:0 0 6px">Printed at the end of each report. One per line: name, then a vertical bar, then phone or web address.</p>
+        <textarea name="contacts" rows="4">${esc(o.contacts.map((c) => `${c.name} | ${c.phone}`).join("\n"))}</textarea>
+      </section>
+      <div class="row" style="margin-bottom:32px"><button class="btn primary" type="submit">Save ordinance</button></div>
+    </form>
+
+    <form id="repForm" class="panel form">
+      <h2>Your details</h2>
+      <p class="small muted" style="margin:0 0 6px">Printed on reports as the person submitting the log. Stored only on this Pi.</p>
+      <div class="two">
+        ${["name", "address", "phone", "email"].map((k) => `<label>${k[0].toUpperCase() + k.slice(1)}<input type="${k === "email" ? "email" : "text"}" name="${k}" value="${esc(r.reporter[k])}"></label>`).join("")}
+      </div>
+      <div class="row"><button class="btn" type="submit">Save my details</button></div>
+    </form>`;
+
+  $("#ordForm").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target), body = { thresholds: {} };
+    for (const k of ["jurisdiction", "code_section", "rule_text", "rule_note", "source_url", "penalty"]) body[k] = f.get(k);
+    for (const k of Object.keys(th)) body.thresholds[k] = f.get(k);
+    body.contacts = String(f.get("contacts")).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [name, ...rest] = l.split("|"); return { name: name.trim(), phone: rest.join("|").trim() };
+    });
+    const preset = $("#preset").value;
+    const changedText = ["jurisdiction", "code_section", "rule_text"].some((k) => body[k] !== o[k]);
+    body.preset = preset === "custom" || changedText ? "custom" : preset;
+    try { await api("/api/ordinance", { method: "PUT", body }); toast("Ordinance saved"); renderOrdinance(); }
+    catch (e) { toast(e.message); }
+  };
+  $("#resetOrd").onclick = async () => {
+    const preset = $("#preset").value === "custom" ? "burnsville_mn" : $("#preset").value;
+    if (!confirm("Replace the rule, criteria and contacts with the preset?")) return;
+    await api("/api/ordinance", { method: "PUT", body: { reset: true, preset } }); toast("Reset to preset"); renderOrdinance();
+  };
+  $("#repForm").onsubmit = async (ev) => {
+    ev.preventDefault();
+    await api("/api/reporter", { method: "PUT", body: Object.fromEntries(new FormData(ev.target)) }); toast("Your details saved");
+  };
+}
+const FLAG_NAMES = { sustained: "Sustained", quiet_hours: "Quiet hours", frequent: "Frequent day", habitual: "Habitual pattern" };
+
+// ----------------------------------------------------------------- report
+function reportQuery() {
+  const r = S.report;
+  const q = new URLSearchParams({ from: r.from, to: r.to });
+  if (r.subject.startsWith("dog:")) q.set("dog", r.subject.slice(4));
+  if (r.subject.startsWith("addr:")) q.set("address", r.subject.slice(5));
+  if (r.flagged) q.set("flagged", "true");
+  if (r.confirmed) q.set("confirmed", "true");
+  return q.toString();
+}
+async function renderReport() {
+  const today = isoToday();
+  S.report = { subject: "all", from: shiftIso(today, -29), to: today, flagged: false, confirmed: false, ...(S.report || {}) };
+  const R = S.report;
+  const [subj, rep] = await Promise.all([api("/api/subjects"), api(`/api/report?${reportQuery()}`)]).catch((e) => { toast(e.message); return []; });
+  if (!rep || route.name !== "report") return;
+  const opt = (v, label) => `<option value="${esc(v)}" ${R.subject === v ? "selected" : ""}>${esc(label)}</option>`;
+  view.innerHTML = `
+    <section class="no-print">
+      <h1>Complaint report</h1>
+      <p class="sub" style="max-width:64ch">A log of barking for one dog or one neighbor's household, ready to print or download for a complaint. Clips for every incident can be downloaded as evidence.</p>
+    </section>
+    <section class="panel no-print reportctl">
+      <label>Report on<select id="rSubj">
+        ${opt("all", "All barking")}
+        ${subj.dogs.length ? `<optgroup label="Dog">${subj.dogs.map((d) => opt(`dog:${d.id}`, d.name + (d.address ? ` (${d.address})` : ""))).join("")}</optgroup>` : ""}
+        ${subj.neighbors.length ? `<optgroup label="Neighbor (all dogs at an address)">${subj.neighbors.map((n) => opt(`addr:${n.address}`, n.address + (n.owner ? ` (${n.owner})` : ""))).join("")}</optgroup>` : ""}
+      </select></label>
+      <label>From<input type="date" id="rFrom" value="${R.from}" max="${today}"></label>
+      <label>To<input type="date" id="rTo" value="${R.to}" max="${today}"></label>
+      <div class="quick">
+        <button class="btn" data-range="7">Last 7 days</button><button class="btn" data-range="30">Last 30 days</button><button class="btn" data-range="90">Last 90 days</button>
+      </div>
+      <label class="check"><input type="checkbox" id="rFlag" ${R.flagged ? "checked" : ""}> Only incidents meeting the ordinance criteria</label>
+      <label class="check"><input type="checkbox" id="rConf" ${R.confirmed ? "checked" : ""} ${R.subject === "all" ? "disabled" : ""}> Only barks I've confirmed are this dog</label>
+      <div class="actions">
+        <button class="btn primary" id="rPrint">Print or save as PDF</button>
+        <a class="btn" href="/api/report.csv?${reportQuery()}">Download CSV</a>
+        <a class="btn" href="/api/report.csv?${reportQuery()}&kind=daily">Daily totals CSV</a>
+        <a class="btn" href="/api/report/clips.zip?${reportQuery()}">Clips and CSV (.zip)</a>
+      </div>
+      ${rep.reporter.name ? "" : `<p class="small muted" style="margin:0;grid-column:1/-1">Add your name and contact details on the <a href="#/ordinance">Ordinance</a> page so they print on the report.</p>`}
+      ${R.subject !== "all" && rep.subject.kind === "dog" && !rep.subject.address ? `<p class="small muted" style="margin:0;grid-column:1/-1">Add this dog's owner and address on the <a href="#/dogs">Dogs</a> page so they print on the report.</p>` : ""}
+    </section>
+    ${reportDoc(rep)}`;
+  const set = (k, v) => { S.report[k] = v; renderReport(); };
+  $("#rSubj").onchange = (e) => { S.report.confirmed = S.report.confirmed && e.target.value !== "all"; set("subject", e.target.value); };
+  $("#rFrom").onchange = (e) => set("from", e.target.value);
+  $("#rTo").onchange = (e) => set("to", e.target.value);
+  $("#rFlag").onchange = (e) => set("flagged", e.target.checked);
+  $("#rConf").onchange = (e) => set("confirmed", e.target.checked);
+  view.querySelectorAll("[data-range]").forEach((b) => b.onclick = () => { S.report.to = today; set("from", shiftIso(today, -(Number(b.dataset.range) - 1))); });
+  $("#rPrint").onclick = () => window.print();
+}
+
+function fmtClock(s) { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`; }
+function shortDate(iso) { return new Date(iso + "T12:00:00Z").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }); }
+function longDate(iso) { return new Date(iso + "T12:00:00Z").toLocaleDateString([], { weekday: "short", year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }); }
+
+function reportDoc(rep) {
+  const o = rep.ordinance, sm = rep.summary, sub = rep.subject, rp = rep.reporter;
+  const subjectLine = sub.kind === "all" ? "All dogs heard at the recording location"
+    : sub.kind === "dog" ? [sub.title, sub.owner && `owned by ${sub.owner}`, sub.address].filter(Boolean).join(", ")
+    : `Dogs kept at ${sub.title}${sub.owner ? ` (${sub.owner})` : ""}`;
+  const dogsLine = sub.dogs?.length ? sub.dogs.map((d) => d.name + (d.description ? ` (${d.description})` : "")).join("; ") : "";
+  const flagTxt = (fl) => fl.map((f) => rep.flag_labels[f] || f).join(", ");
+  const activeDays = rep.days.filter((d) => d.incidents);
+  const generated = new Date(rep.generated_ts * 1000).toLocaleString([], { dateStyle: "long", timeStyle: "short", ...timeOpts() });
+  const clockOk = S.status?.clock?.ntp_synced;
+  return `
+  <article class="doc">
+    <header class="doc-head">
+      <h1>Barking complaint log</h1>
+      <dl class="doc-meta">
+        <div><dt>Subject</dt><dd>${esc(subjectLine)}${dogsLine && sub.kind !== "dog" ? `<br><span class="muted">${esc(dogsLine)}</span>` : sub.dogs?.[0]?.description ? `<br><span class="muted">${esc(sub.dogs[0].description)}</span>` : ""}</dd></div>
+        <div><dt>Period</dt><dd>${longDate(rep.period.from)} to ${longDate(rep.period.to)}</dd></div>
+        <div><dt>Prepared by</dt><dd>${rp.name ? esc([rp.name, rp.address].filter(Boolean).join(", ")) + (rp.phone || rp.email ? `<br>${esc([rp.phone, rp.email].filter(Boolean).join(", "))}` : "") : `<span class="blank">Name and address</span>`}</dd></div>
+        <div><dt>Generated</dt><dd>${esc(generated)} (times in ${esc(rep.timezone)})</dd></div>
+      </dl>
+    </header>
+
+    <section class="doc-sec">
+      <h2>Ordinance</h2>
+      <p><strong>${esc(o.code_section)}</strong>, ${esc(o.jurisdiction)}</p>
+      <p>${esc(o.rule_text)}</p>
+      ${o.rule_note ? `<p class="muted">${esc(o.rule_note)}</p>` : ""}
+      ${o.source_url ? `<p class="small muted">Source: ${esc(o.source_url)}</p>` : ""}
+    </section>
+
+    <section class="doc-sec">
+      <h2>Summary</h2>
+      ${sm.incidents ? `<p class="lead">Barking was recorded on <strong>${sm.days_with_barking} of ${sm.days_in_period} days</strong>: ${sm.incidents} incident${sm.incidents === 1 ? "" : "s"} totalling <strong>${fmtDur(sm.total_seconds)}</strong>${sub.kind !== "all" ? ` and ${sm.barks} barks` : ""}. ${sm.flag_counts.sustained} incident${sm.flag_counts.sustained === 1 ? " was" : "s were"} sustained and ${sm.flag_counts.quiet_hours} ran into quiet hours. ${sm.days_flagged.frequent ? `${sm.days_flagged.frequent} day${sm.days_flagged.frequent === 1 ? " was" : "s were"} frequent by the daily total. ` : ""}${sm.days_flagged.habitual ? `${sm.days_flagged.habitual} day${sm.days_flagged.habitual === 1 ? "" : "s"} formed a habitual pattern.` : ""} The longest lasted ${fmtDur(sm.longest.duration)}, on ${fmtDay(sm.longest.start_ts)} at ${fmtTime(sm.longest.start_ts)}.</p>`
+        : `<p class="lead">No barking${rep.flagged_only ? " meeting the criteria" : ""} was recorded for this subject in the period.</p>`}
+      <table class="crit">
+        <thead><tr><th>Criterion</th><th>Definition used</th><th class="num">Incidents</th><th class="num">Days</th></tr></thead>
+        <tbody>${Object.entries(rep.criteria).map(([k, v]) => `<tr><td>${esc(rep.flag_labels[k])}</td><td>${esc(v)}</td><td class="num">${k in sm.flag_counts ? sm.flag_counts[k] : "–"}</td><td class="num">${k in sm.flag_counts ? new Set(rep.incidents.filter((i) => i.flags.includes(k)).map((i) => i.date)).size : sm.days_flagged[k]}</td></tr>`).join("")}</tbody>
+      </table>
+    </section>
+
+    ${activeDays.length ? `<section class="doc-sec">
+      <h2>Daily totals</h2>
+      <table><thead><tr><th>Date</th><th class="num">Incidents</th><th class="num">Total time</th>${sub.kind !== "all" ? `<th class="num">Barks</th>` : ""}<th class="num">Quiet hours</th><th>Criteria met</th></tr></thead>
+      <tbody>${activeDays.map((d) => `<tr><td class="nw">${longDate(d.date)}</td><td class="num">${d.incidents}</td><td class="num">${fmtClock(d.seconds)}</td>${sub.kind !== "all" ? `<td class="num">${d.barks}</td>` : ""}<td class="num">${d.quiet_seconds ? fmtClock(d.quiet_seconds) : "–"}</td><td>${esc(flagTxt([...new Set([...d.flags, ...rep.incidents.filter((i) => i.date === d.date).flatMap((i) => i.flags)])]))}</td></tr>`).join("")}</tbody></table>
+    </section>` : ""}
+
+    ${rep.incidents.length ? `<section class="doc-sec">
+      <h2>Incident log</h2>
+      <table class="log"><thead><tr><th class="num">#</th><th>Date</th><th>Start</th><th>End</th><th class="num">Length</th><th class="num">Barks</th>${sub.kind === "all" ? `<th>Dogs heard</th>` : `<th>Identified</th>`}<th>Criteria met</th><th>Notes</th></tr></thead>
+      <tbody>${rep.incidents.map((i) => `<tr class="${i.flags.length ? "hit" : ""}"><td class="num">${i.number}</td><td class="nw">${shortDate(i.date)}</td><td class="nw">${esc(i.start)}</td><td class="nw">${esc(i.end)}</td><td class="num">${fmtClock(i.duration)}</td><td class="num">${sub.kind === "all" ? i.barks : i.subject_barks}</td><td>${sub.kind === "all" ? esc(Object.entries(i.dogs).map(([k, v]) => `${k} ×${v}`).join(", ")) : ({ confirmed: "Confirmed", automatic: "Automatic", mixed: "Partly confirmed" }[i.identified] || "")}</td><td>${esc(flagTxt(i.flags))}</td><td>${esc(i.notes)}</td></tr>`).join("")}</tbody></table>
+      <p class="small muted">An incident is continuous barking with no break longer than ${o.thresholds.max_pause_seconds} seconds. ${sub.kind !== "all" ? "“Confirmed” means a person listened to the recording and identified the dog; “Automatic” means it was matched by voice to barks that were confirmed earlier." : ""}</p>
+    </section>` : ""}
+
+    <section class="doc-sec">
+      <h2>How this was recorded</h2>
+      <p>Sound was recorded continuously by a Raspberry Pi 4 with a USB microphone${S.status?.audio_device ? ` (${esc(S.status.audio_device.split(":")[0])})` : ""} at the preparer's home. Each loud sound was checked by an audio classification model trained to recognize dog barking, and barks less than ${S.status?.settings?.episode_gap ?? 8} seconds apart were grouped. Times come from the device clock${clockOk === true ? ", which is synchronized to internet time" : clockOk === false ? " (not confirmed synchronized at the time of this report)" : ""}. An audio clip was saved for each recorded episode and can be provided on request.</p>
+    </section>
+
+    ${o.contacts?.length ? `<section class="doc-sec"><h2>Where to report</h2><ul class="contacts">${o.contacts.map((c) => `<li>${esc(c.name)}${c.phone ? `: ${esc(c.phone)}` : ""}</li>`).join("")}</ul></section>` : ""}
+
+    <section class="doc-sec sign">
+      <p>I declare that this log was produced from recordings made at my residence and is accurate to the best of my knowledge.</p>
+      <div class="sigline"><span>Signature</span><span>Date</span></div>
+    </section>
+  </article>`;
 }
 
 // ----------------------------------------------------------------- system
@@ -553,6 +791,8 @@ function renderSystemLive() {
       <dt>Last check</dt><dd>${Math.round(d.last_prob * 100)}% bark${d.last_detail?.top ? ` · heard “${esc(d.last_detail.top)}”` : ""} · ${d.classify_ms} ms</dd>
       <dt>Barks since start</dt><dd>${d.stats.barks || 0} (${d.stats.suppressed || 0} ignored as known false alarms)</dd>
       <dt>Dog matching</dt><dd>${s.identifier.ready ? "On" : `Waiting for ${s.identifier.min_labels}+ labels per dog`}</dd>
+      <dt>Microphone</dt><dd>${esc(s.audio_device || "Default input")}</dd>
+      <dt>Clock</dt><dd>${s.clock?.ntp_synced === true ? "Synchronized to internet time" : s.clock?.ntp_synced === false ? "Not synchronized: report timestamps may drift" : "Unknown"}</dd>
       <dt>Running for</dt><dd>${fmtDur(d.uptime_s)}</dd>` : `<dt>Status</dt><dd>Not listening</dd>`;
   const dk = $("#diskKv");
   if (dk) dk.innerHTML = `
