@@ -195,3 +195,65 @@ def eq_bands(frame: np.ndarray, n_bands: int = EQ_BANDS) -> np.ndarray:
     mean = (csum[hi] - csum[lo]) / (hi - lo)
     db = 10 * np.log10(0.5 * peak + 0.5 * mean + 1e-12) - _EQ_REF_DB
     return np.clip((db + 84.0) / 54.0, 0.0, 1.0).astype(np.float32)
+
+
+# ---- locating barks precisely in time --------------------------------------------
+BARK_LO_HZ, BARK_HI_HZ = 300.0, 3500.0
+
+
+def band_envelope(x: np.ndarray, lo: float = BARK_LO_HZ, hi: float = BARK_HI_HZ) -> np.ndarray:
+    """Energy (dB) in the bark band every 10 ms. Frame k is centred on sample k*HOP + N_FFT/2."""
+    p = power_spectrogram(x)
+    f = np.fft.rfftfreq(N_FFT, 1.0 / SR)
+    return 10.0 * np.log10(p[:, (f >= lo) & (f <= hi)].sum(axis=1) + 1e-10)
+
+
+def frame_to_sample(k: int) -> int:
+    """Sample index of an envelope frame's attack point (a little before the frame centre)."""
+    return int(k * HOP + N_FFT // 2 - HOP)
+
+
+def find_attacks(env: np.ndarray, floor: float | None = None, min_rise: float = 8.0,
+                 sep_s: float = 0.15) -> list[dict]:
+    """Bark-like events in a band envelope: each is a local peak at least `min_rise` dB above the
+    floor, separated by `sep_s`. Returns frames for the attack (onset), peak and end."""
+    if len(env) == 0:
+        return []
+    floor = float(np.percentile(env, 20)) if floor is None else floor
+    sep = max(1, int(sep_s * SR / HOP))
+    out = []
+    n = len(env)
+    for i in range(n):
+        v = env[i]
+        if v < floor + min_rise:
+            continue
+        lo, hi = max(0, i - sep), min(n, i + sep + 1)
+        if v < env[lo:hi].max() or (i > lo and np.any(env[lo:i] == v)):
+            continue
+        k = i                                      # attack: walk back to where it was 12 dB down
+        while k > 0 and env[k - 1] >= v - 12.0 and i - k < 30:
+            k -= 1
+        e = i                                      # end: decays 15 dB, nears the floor, or next attack
+        while (e + 1 < n and env[e + 1] >= v - 15.0 and env[e + 1] >= floor + 4.0 and e - i < 150
+               and not (e > i + 5 and env[e + 1] - env[e] > 6.0)):
+            e += 1
+        out.append({"onset": k, "peak": i, "end": e + 1, "peak_db": float(v), "floor": floor})
+    return out
+
+
+def isolate(x: np.ndarray, start: int, end: int, pad_before: float = 0.04, pad_after: float = 0.12,
+            ramp: float = 0.02) -> np.ndarray:
+    """Copy of x with everything outside [start, end] faded to silence, so a classifier judges this
+    one sound and not a neighbouring bark that happens to fall in the same window."""
+    n = len(x)
+    a = max(0, start - int(pad_before * SR))
+    b = min(n, end + int(pad_after * SR))
+    r = max(1, int(ramp * SR))
+    m = np.zeros(n, np.float32)
+    m[a:b] = 1.0
+    up = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, r))
+    lo = max(0, a - r)
+    m[lo:a] = up[r - (a - lo):]
+    hi = min(n, b + r)
+    m[b:hi] = up[::-1][: hi - b]
+    return x * m

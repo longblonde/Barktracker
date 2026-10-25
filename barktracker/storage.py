@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     clip_seconds REAL,
     reviewed INTEGER NOT NULL DEFAULT 0,
     false_positive INTEGER NOT NULL DEFAULT 0,
-    note TEXT DEFAULT ''
+    note TEXT DEFAULT '',
+    refined INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_episodes_start ON episodes(start_ts);
 CREATE TABLE IF NOT EXISTS barks (
@@ -66,6 +67,9 @@ class Store:
         self._write_lock = threading.Lock()
         with self.tx() as c:
             c.executescript(SCHEMA)
+            ecols = {r[1] for r in c.execute("PRAGMA table_info(episodes)")}
+            if "refined" not in ecols:
+                c.execute("ALTER TABLE episodes ADD COLUMN refined INTEGER NOT NULL DEFAULT 0")
             cols = {r[1] for r in c.execute("PRAGMA table_info(dogs)")}
             for col in ("owner", "address", "description"):   # migrate older databases
                 if col not in cols:
@@ -212,11 +216,28 @@ class Store:
             c.execute("UPDATE episodes SET false_positive=? WHERE id=?", (1 if fp else 0, episode_id))
 
     def set_episode(self, episode_id: int, **fields) -> None:
-        allowed = {k: v for k, v in fields.items() if k in ("reviewed", "note", "false_positive")}
+        allowed = {k: v for k, v in fields.items() if k in ("reviewed", "note", "false_positive", "refined")}
         if allowed:
             with self.tx() as c:
                 sets = ", ".join(f"{k}=?" for k in allowed)
                 c.execute(f"UPDATE episodes SET {sets} WHERE id=?", (*allowed.values(), episode_id))
+
+    def replace_barks(self, episode_id: int, remove_ids: list[int], new: list[dict]) -> None:
+        with self.tx() as c:
+            c.executemany("DELETE FROM barks WHERE id=? AND episode_id=?", [(i, episode_id) for i in remove_ids])
+            c.executemany(
+                "INSERT INTO barks(episode_id, ts, duration, prob, peak_db, features, pred_dog_id, pred_conf,"
+                " label_dog_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                [(episode_id, b["ts"], b["duration"], b["prob"], b["peak"],
+                  b["feats"].astype(np.float32).tobytes() if b.get("feats") is not None else None,
+                  b.get("dog"), b.get("conf") if b.get("dog") is not None else None, b.get("label"))
+                 for b in new])
+
+    def update_episode_span(self, episode_id: int, start_ts: float, end_ts: float, bark_count: int,
+                            peak_db: float, max_prob: float) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE episodes SET start_ts=?, end_ts=?, bark_count=?, peak_db=?, max_prob=? WHERE id=?",
+                      (start_ts, end_ts, bark_count, peak_db, max_prob, episode_id))
 
     def training_set(self) -> tuple[np.ndarray, np.ndarray]:
         rows = self.conn.execute(

@@ -183,18 +183,17 @@ class BarkDetector:
         if prob < self.det.bark_threshold:
             return
 
-        # bark extent: from the onset until the sound decays 15 dB below its peak, sinks back
-        # toward the noise floor, or the next bark's attack begins
-        lv = [(i, l) for i, l in self.levels if i >= onset]
-        cutoff = (self.floor or -90) + 6.0
-        end, pk, prev = onset + FRAME, -120.0, None
-        for i, l in lv:
-            if i > onset and (l < cutoff or l < pk - 15.0
-                              or (prev is not None and l - prev > 6.0 and i >= onset + 2 * FRAME)):
-                break
-            pk, prev, end = max(pk, l), l, i + FRAME
-        end = min(end, onset + int(1.5 * F.SR))
-        peak = max((l for i, l in lv if i < end), default=-120.0)
+        # The loudness trigger often fires on noise just before the bark, and the classifier only
+        # says "there's a bark somewhere in this second". Pin the bark to its actual attack: the
+        # strongest bark-band attack near the trigger, at 10 ms resolution.
+        located = self._locate(win, onset)
+        if located is None:
+            return
+        onset, end = located
+        if onset < self.busy_until:          # same bark as one already counted
+            return
+        lv = [(i, l) for i, l in self.levels if onset - FRAME < i < end]
+        peak = max((l for _, l in lv), default=F.dbfs(self._audio(onset, end)))
 
         seg = self._audio(max(onset - int(0.03 * F.SR), onset - PRE_ONSET), max(end, onset + int(0.2 * F.SR)))
         feats = F.bark_features(seg) if len(seg) >= F.N_FFT else None
@@ -225,6 +224,24 @@ class BarkDetector:
                             conf if dog is not None else None)
         self.store.finish_episode(ep.id, self.ts_of(ep.last_bark_end_idx), ep.barks, ep.peak_db,
                                   ep.max_prob, None)
+
+    def _locate(self, win: np.ndarray, onset: int) -> tuple[int, int] | None:
+        """Absolute (onset, end) sample indices of the bark inside a classifier window."""
+        w0 = onset - PRE_ONSET
+        env = F.band_envelope(win)
+        attacks = F.find_attacks(env, min_rise=6.0)
+        lo, hi = PRE_ONSET - int(0.15 * F.SR), PRE_ONSET + int(0.65 * F.SR)
+        fresh = [a for a in attacks if w0 + F.frame_to_sample(a["onset"]) >= self.busy_until]
+        near = [a for a in fresh if lo <= F.frame_to_sample(a["onset"]) <= hi] or fresh
+        if not near:
+            return (onset, onset + int(0.2 * F.SR)) if not attacks else None
+        # the earliest attack that's nearly as strong as the strongest one: when two barks share
+        # a window, the first is counted now and the second gets its own trigger
+        top = max(a["peak_db"] for a in near)
+        best = next(a for a in near if a["peak_db"] >= top - 10.0)
+        a_on = w0 + max(0, F.frame_to_sample(best["onset"]))
+        a_end = w0 + F.frame_to_sample(best["end"]) + F.HOP
+        return a_on, max(a_on + int(0.08 * F.SR), min(a_end, a_on + int(1.5 * F.SR)))
 
     # -------------------------------------------------------------- episodes
     def _open_episode(self, onset: int) -> None:

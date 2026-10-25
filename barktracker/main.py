@@ -65,6 +65,21 @@ def cmd_ingest(args, cfg):
     print(f"{args.file}: {dict(det.stats)}")
 
 
+def cmd_refine(args, cfg):
+    """Re-scan saved clips so bark marks line up exactly (runs automatically for new episodes)."""
+    from .app import BarkApp
+    from .classifier import make_classifier
+    from .refine import refine_episode
+    bark = BarkApp(cfg, None, start_detector=False)
+    where = "" if args.all else " AND refined=0"
+    rows = bark.store.q(f"SELECT id FROM episodes WHERE clip_seconds IS NOT NULL{where} ORDER BY start_ts")
+    clf = make_classifier(cfg.detection.mode, cfg.detection.model_path)
+    for i, r in enumerate(rows, 1):
+        info = refine_episode(bark.store, r["id"], clf, bark.identifier, cfg.detection.bark_threshold)
+        print(f"[{i}/{len(rows)}] episode {r['id']}: {info}")
+    print(f"Refined {len(rows)} episodes")
+
+
 def cmd_retrain(args, cfg):
     from .app import BarkApp
     print(BarkApp(cfg, None, start_detector=False).retrain())
@@ -180,6 +195,9 @@ def main(argv=None):
     sub.add_parser("devices", help="list audio input devices").set_defaults(fn=cmd_devices)
     sub.add_parser("level", help="live mic level meter for setup").set_defaults(fn=cmd_level)
     sub.add_parser("retrain", help="retrain dog identification from labels").set_defaults(fn=cmd_retrain)
+    rf = sub.add_parser("refine", help="re-scan saved clips so bark marks line up exactly")
+    rf.add_argument("--all", action="store_true", help="also redo episodes already refined")
+    rf.set_defaults(fn=cmd_refine)
 
     i = sub.add_parser("ingest", help="process a WAV recording into the log")
     i.add_argument("file")

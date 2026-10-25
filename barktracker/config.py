@@ -33,6 +33,7 @@ class DetectionConfig:
     min_episode_barks: int = 1           # episodes with fewer barks are discarded
     noise_floor_adapt: float = 0.02      # EMA rate for noise floor tracking (per frame)
     suppress_learned_false_positives: bool = True
+    refine: bool = True                  # re-scan each finished clip to place barks exactly
 
 
 @dataclass

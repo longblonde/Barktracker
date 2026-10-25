@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import threading
 import time
 import urllib.request
@@ -35,10 +36,14 @@ class BarkApp:
         self.stop = threading.Event()
         self.error: str | None = None
         self.threads: list[threading.Thread] = []
+        self.refine_q: queue.Queue = queue.Queue()
         if start_detector and source is not None:
             clf = make_classifier(cfg.detection.mode, cfg.detection.model_path)
-            self.detector = BarkDetector(cfg, clf, self.store, self.identifier, self.notify)
+            self.detector = BarkDetector(cfg, clf, self.store, self.identifier, self.episode_closed)
             self._spawn(self._detect_loop, "detector")
+            if cfg.detection.refine:
+                self._spawn(self._refine_loop, "refine")
+                self.queue_unrefined()
         self._spawn(self._maintenance_loop, "maintenance")
 
     def _spawn(self, fn, name):
@@ -57,6 +62,35 @@ class BarkApp:
                 self.error = f"{type(e).__name__}: {e}"
                 log.exception("Audio/detector error; retrying in 10s")
                 self.stop.wait(10)
+
+    def episode_closed(self, info: dict) -> None:
+        if self.cfg.detection.refine:
+            self.refine_q.put((0, info["id"]))
+        self.notify(info)
+
+    def queue_unrefined(self, limit: int = 2000) -> int:
+        rows = self.store.q("SELECT id FROM episodes WHERE refined=0 AND clip_seconds IS NOT NULL"
+                            " AND clip_path IS NOT NULL ORDER BY start_ts DESC LIMIT ?", (limit,))
+        for r in rows:
+            self.refine_q.put((1, r["id"]))       # background catch-up after fresh episodes
+        return len(rows)
+
+    def _refine_loop(self):
+        from .refine import refine_episode
+        clf = None
+        while not self.stop.is_set():
+            try:
+                _, eid = self.refine_q.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                if clf is None:   # its own model instance: TFLite interpreters aren't thread-safe
+                    clf = make_classifier(self.cfg.detection.mode, self.cfg.detection.model_path)
+                info = refine_episode(self.store, eid, clf, self.identifier, self.cfg.detection.bark_threshold)
+                log.info("Refined episode %d: %s", eid, info)
+            except Exception:  # noqa: BLE001
+                log.exception("Refining episode %d failed", eid)
+            self.stop.wait(0.2)   # stay gentle on the Pi while catching up
 
     def _maintenance_loop(self):
         while not self.stop.is_set():

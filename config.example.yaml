@@ -22,6 +22,7 @@ detection:
   episode_gap: 8               # seconds of quiet that end an episode
   min_episode_barks: 1         # drop episodes with fewer barks (2 filters out single woofs)
   suppress_learned_false_positives: true   # drop sounds that match ones you marked "Not a bark"
+  refine: true                 # re-scan each finished clip so bark marks line up exactly
 
 clips:
   preroll: 2                   # seconds of audio kept before the first bark

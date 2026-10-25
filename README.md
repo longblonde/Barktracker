@@ -123,6 +123,8 @@ mic ─► 50 ms frames ─► noise floor tracker + onset gate
                ~1 s window ─► YAMNet ─► P(bark) ≥ 0.35 ? ─► dog matcher ─► episode + clip
 ```
 
+- **Exact bark positions.** The trigger often fires on noise just before a bark, and the model only says a bark is somewhere in the next second. So each bark is pinned to its actual attack in the bark frequency band (300 to 3500 Hz) at 10 ms resolution.
+- **Second pass after each episode.** When an episode ends, a background pass re-scans the whole clip: it finds every attack, judges each one on its own with neighbouring sounds faded out, and rewrites the episode's barks with exact positions and lengths, adding barks the live pass missed and removing duplicates. Labels you've already given move with their bark. Existing clips are re-scanned automatically after updating; `python -m barktracker refine --all` redoes everything.
 - The noise floor adapts downward quickly and upward slowly, so a fan switching on raises the threshold over a few minutes without hiding barks.
 - YAMNet scores 521 AudioSet classes; Barktracker combines *Bark*, *Bow-wow*, *Yip*, *Dog*, *Howl*, *Growling* and *Whimper (dog)* with weights. In testing on real recordings it caught all dog clips and ignored birds, rain and fireworks.
 - Without YAMNet (32-bit OS, no runtime) a simple acoustic detector is used. It catches barks but also some claps, door slams and fireworks; the "Not a bark" filter helps.
@@ -150,6 +152,7 @@ python -m barktracker run                  # what the service runs: listen + das
 python -m barktracker run --file x.wav     # replay a recording through the live pipeline
 python -m barktracker ingest x.wav --start 2026-10-24T08:00   # log an existing recording
 python -m barktracker devices | level | retrain
+python -m barktracker refine [--all]      # re-scan saved clips so bark marks line up exactly
 python -m barktracker demo                 # two weeks of synthetic barking to try the dashboard
 ```
 
