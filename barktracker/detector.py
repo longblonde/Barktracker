@@ -58,7 +58,7 @@ class BarkDetector:
         self.store = store
         self.identifier = identifier
         self.on_episode = on_episode
-        ring_s = cfg.clips.preroll + 3.0
+        ring_s = 10.0 + 3.0   # max pre-roll (adjustable at runtime) + classifier look-ahead
         self.ring: collections.deque = collections.deque(maxlen=int(ring_s * F.SR / FRAME) + 2)
         self.levels: collections.deque = collections.deque(maxlen=self.ring.maxlen)
         self.carry = np.zeros(0, np.float32)
@@ -78,6 +78,7 @@ class BarkDetector:
         self.last_prob = 0.0
         self.last_detail: dict = {}
         self.last_classify_ms = 0.0
+        self.last_bark_wall = 0.0
         self.started = time.time()
 
     # ------------------------------------------------------------------ input
@@ -204,6 +205,7 @@ class BarkDetector:
 
         self.busy_until = end
         self.stats["barks"] += 1
+        self.last_bark_wall = time.time()
         if self.ep is None:
             self._open_episode(onset)
         ep = self.ep

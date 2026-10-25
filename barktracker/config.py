@@ -67,6 +67,11 @@ class NotifyConfig:
 
 
 @dataclass
+class UiConfig:
+    media_dir: str | None = None         # folder holding idle/ and bark/ pictures; default <data_dir>/media
+
+
+@dataclass
 class Config:
     data_dir: str = "data"
     timezone: str | None = None          # e.g. America/Chicago; None = system local time
@@ -76,6 +81,7 @@ class Config:
     identify: IdentifyConfig = field(default_factory=IdentifyConfig)
     web: WebConfig = field(default_factory=WebConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
 
     @property
     def data_path(self) -> Path:
@@ -84,6 +90,10 @@ class Config:
     @property
     def clips_path(self) -> Path:
         return self.data_path / "clips"
+
+    @property
+    def media_path(self) -> Path:
+        return Path(self.ui.media_dir).expanduser().resolve() if self.ui.media_dir else self.data_path / "media"
 
     @property
     def db_path(self) -> Path:

@@ -97,26 +97,19 @@ document.addEventListener("click", (ev) => {
   playingBtn = b; b.classList.add("playing"); b.innerHTML = ICON_PAUSE; b.setAttribute("aria-label", "Pause clip");
 });
 
-// ------------------------------------------------------------ live pill
+// ---------------------------------------------------------- status poll
 async function pollStatus() {
   try {
     const s = await api("/api/status");
     S.status = s;
     if (s.settings.timezone && s.settings.timezone !== "system") S.tz = s.settings.timezone;
-    const el = $("#live"), d = s.detector;
-    el.className = "live";
-    if (s.error && (!d || d.stats.frames === undefined)) { el.classList.add("off"); el.lastChild.textContent = "Microphone problem"; }
-    else if (!d) { el.lastChild.textContent = "Not listening"; }
-    else if (d.barking_now) { el.classList.add("barking"); el.lastChild.textContent = `Barking now, ${d.current_episode.barks} bark${d.current_episode.barks === 1 ? "" : "s"}`; }
-    else { el.classList.add("on"); el.lastChild.textContent = "Listening"; }
-    if (route.name === "system") renderSystemLive();
+    const d = s.detector;
+    if (route.name === "settings") renderSystemLive();
     if (route.name === "overview" && d && S.lastEpisodes !== s.counts.episodes) {
       if (S.lastEpisodes !== undefined && S.overviewDate === isoToday()) renderOverview(true);
       S.lastEpisodes = s.counts.episodes;
     }
-  } catch (_) {
-    const el = $("#live"); el.className = "live off"; el.lastChild.textContent = "Can't reach the Pi";
-  }
+  } catch (_) { /* the heartbeat band shows connection problems */ }
 }
 
 // ---------------------------------------------------------------- router
@@ -129,7 +122,9 @@ function navigate() {
   const navName = route.name === "clip" ? "clips" : route.name;
   $(`[data-nav="${navName}"]`)?.setAttribute("aria-current", "page");
   player.pause(); resetBtn();
-  ({ overview: renderOverview, clips: renderClips, clip: renderClip, dogs: renderDogs, report: renderReport, ordinance: renderOrdinance, system: renderSystem }[route.name] || renderOverview)();
+  document.body.classList.toggle("kiosk", route.name === "live");
+  if (route.name === "ordinance" || route.name === "system") { location.replace(`#/settings/${route.name === "ordinance" ? "code" : "system"}`); return; }
+  ({ overview: renderOverview, clips: renderClips, clip: renderClip, dogs: renderDogs, report: renderReport, settings: renderSettings, live: renderLive }[route.name] || renderOverview)();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", navigate);
@@ -542,89 +537,213 @@ async function renderDogs() {
   view.querySelectorAll("[data-report]").forEach((a) => a.addEventListener("click", () => { S.report = { ...(S.report || {}), subject: `dog:${a.dataset.report}` }; }));
 }
 
-// -------------------------------------------------------------- ordinance
-async function renderOrdinance() {
-  const r = await api("/api/ordinance");
-  if (route.name !== "ordinance") return;
-  const o = r.ordinance, th = o.thresholds;
-  const num = (k, label, unit, step = 1) => `<label>${label}<span class="unit"><input type="number" min="0" step="${step}" name="${k}" value="${th[k]}" required>${unit}</span></label>`;
+// --------------------------------------------------------------- settings
+const SETTINGS_SECTIONS = [
+  ["storage", "Storage"], ["detection", "Detection"], ["code", "Code parameters"], ["ordinance", "Ordinance and contacts"],
+  ["pictures", "Heartbeat pictures"], ["notify", "Alerts and dog matching"], ["system", "System"],
+];
+async function renderSettings() {
+  const [st, ord, media] = await Promise.all([api("/api/settings"), api("/api/ordinance"), api("/api/media")]);
+  if (route.name !== "settings") return;
   view.innerHTML = `
-    <section>
-      <h1>Noise ordinance</h1>
-      <p class="sub" style="max-width:64ch">The local rule your complaint reports cite, and the criteria Barktracker uses to highlight incidents worth reporting. Defaults are for ${esc(o.jurisdiction)}.</p>
-    </section>
-    <form id="ordForm">
-      <section class="panel form">
-        <div class="row spread"><h2>The rule</h2>
-          <div class="row"><label class="inline">Preset <select id="preset">${r.presets.map((p) => `<option value="${p.id}" ${p.id === o.preset ? "selected" : ""}>${esc(p.label)}</option>`).join("")}<option value="custom" ${r.presets.some((p) => p.id === o.preset) ? "" : "selected"}>Custom</option></select></label>
-          <button type="button" class="btn" id="resetOrd">Reset to preset</button></div></div>
-        <label>Jurisdiction<input type="text" name="jurisdiction" value="${esc(o.jurisdiction)}"></label>
-        <label>Code section<input type="text" name="code_section" value="${esc(o.code_section)}"></label>
-        <label>What the rule says (in plain words)<textarea name="rule_text" rows="3">${esc(o.rule_text)}</textarea></label>
-        <label>Notes<textarea name="rule_note" rows="3">${esc(o.rule_note)}</textarea></label>
-        <div class="two">
-          <label>Source link<input type="url" name="source_url" value="${esc(o.source_url)}"></label>
-          <label>Penalty<input type="text" name="penalty" value="${esc(o.penalty)}"></label>
-        </div>
-        ${o.source_url ? `<p class="small muted" style="margin:0"><a href="${esc(o.source_url)}" target="_blank" rel="noopener">Read the code on the city's site</a>. Check it before filing; codes change.</p>` : ""}
-      </section>
+    <section><h1>Settings</h1><p class="sub">Changes take effect right away and are kept on this Pi.</p></section>
+    <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}">${t}</a>`).join("")}</nav>
+    ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}`;
+  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures(media); drawNotify(st); drawSystem(st);
+  if (route.arg) $(`#sec-${route.arg}`)?.scrollIntoView();
+}
 
-      <section class="panel form">
-        <h2>Criteria for flagging incidents</h2>
-        <p class="small muted" style="margin:0 0 6px">${o.preset === "burnsville_mn" ? "Burnsville's code says “habitually or frequently” without numbers, so these are your documentation criteria, not legal limits." : "Set these to match your ordinance, or to what you consider reportable."} Barking separated by pauses no longer than the break setting counts as one incident.</p>
-        <div class="grid3">
-          ${num("sustained_minutes", "Sustained barking", "minutes or longer")}
-          ${num("max_pause_seconds", "Allowed break within an incident", "seconds")}
-          ${num("daily_minutes", "Frequent day", "minutes in a day")}
-          <label>Quiet hours start<input type="time" name="quiet_start" value="${th.quiet_start}" required></label>
-          <label>Quiet hours end<input type="time" name="quiet_end" value="${th.quiet_end}" required></label>
-          ${num("quiet_minutes", "Flag during quiet hours after", "minutes")}
-          ${num("habitual_days", "Habitual pattern", "days meeting a criterion")}
-          ${num("habitual_window_days", "…within", "days")}
-        </div>
-        <ul class="criteria">${Object.entries(r.criteria).map(([k, v]) => `<li><strong>${FLAG_NAMES[k]}</strong>: ${esc(v)}</li>`).join("")}</ul>
-      </section>
+// form helpers ------------------------------------------------------------
+const fieldNum = (key, label, val, { unit = "", step = 1, min = "", max = "", help = "" } = {}) =>
+  `<label>${label}<span class="unit"><input type="number" name="${key}" value="${val ?? ""}" step="${step}" min="${min}" max="${max}" required>${unit}</span>${help ? `<span class="help">${help}</span>` : ""}</label>`;
+const fieldText = (key, label, val, { type = "text", help = "", placeholder = "" } = {}) =>
+  `<label>${label}<input type="${type}" name="${key}" value="${esc(val ?? "")}" placeholder="${esc(placeholder)}">${help ? `<span class="help">${help}</span>` : ""}</label>`;
+const fieldCheck = (key, label, val, help = "") =>
+  `<label class="check"><input type="checkbox" name="${key}" ${val ? "checked" : ""}> ${label}${help ? `<span class="help">${help}</span>` : ""}</label>`;
 
-      <section class="panel form">
-        <h2>Where to report</h2>
-        <p class="small muted" style="margin:0 0 6px">Printed at the end of each report. One per line: name, then a vertical bar, then phone or web address.</p>
-        <textarea name="contacts" rows="4">${esc(o.contacts.map((c) => `${c.name} | ${c.phone}`).join("\n"))}</textarea>
-      </section>
-      <div class="row" style="margin-bottom:32px"><button class="btn primary" type="submit">Save ordinance</button></div>
-    </form>
-
-    <form id="repForm" class="panel form">
-      <h2>Your details</h2>
-      <p class="small muted" style="margin:0 0 6px">Printed on reports as the person submitting the log. Stored only on this Pi.</p>
-      <div class="two">
-        ${["name", "address", "phone", "email"].map((k) => `<label>${k[0].toUpperCase() + k.slice(1)}<input type="${k === "email" ? "email" : "text"}" name="${k}" value="${esc(r.reporter[k])}"></label>`).join("")}
-      </div>
-      <div class="row"><button class="btn" type="submit">Save my details</button></div>
+function settingsForm(id, title, intro, fieldsHtml, onSave, extra = "") {
+  const el = $(`#sec-${id}`);
+  el.innerHTML = `<form class="panel form" id="f-${id}">
+      <h2>${title}</h2>${intro ? `<p class="small muted intro">${intro}</p>` : ""}
+      ${fieldsHtml}
+      <div class="row spread"><button class="btn primary" type="submit">Save ${title.toLowerCase()}</button>${extra}</div>
     </form>`;
-
-  $("#ordForm").onsubmit = async (ev) => {
+  $(`#f-${id}`).onsubmit = async (ev) => {
     ev.preventDefault();
-    const f = new FormData(ev.target), body = { thresholds: {} };
-    for (const k of ["jurisdiction", "code_section", "rule_text", "rule_note", "source_url", "penalty"]) body[k] = f.get(k);
-    for (const k of Object.keys(th)) body.thresholds[k] = f.get(k);
-    body.contacts = String(f.get("contacts")).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
-      const [name, ...rest] = l.split("|"); return { name: name.trim(), phone: rest.join("|").trim() };
-    });
-    const preset = $("#preset").value;
-    const changedText = ["jurisdiction", "code_section", "rule_text"].some((k) => body[k] !== o[k]);
-    body.preset = preset === "custom" || changedText ? "custom" : preset;
-    try { await api("/api/ordinance", { method: "PUT", body }); toast("Ordinance saved"); renderOrdinance(); }
-    catch (e) { toast(e.message); }
+    const f = ev.target, vals = {};
+    for (const inp of f.querySelectorAll("input[name], select[name], textarea[name]")) {
+      vals[inp.name] = inp.type === "checkbox" ? inp.checked : inp.value;
+    }
+    try { await onSave(vals, f); } catch (e) { toast(e.message); }
   };
+  return el;
+}
+async function saveApp(values, msg) {
+  const st = await api("/api/settings", { method: "PUT", body: { values } });
+  toast(msg); drawStorage(st); return st;
+}
+
+function drawStorage(st) {
+  const d = st.disk, v = st.values;
+  const other = Math.max(0, d.used_mb - d.clips_mb - d.db_mb);
+  const pct = (x) => `${Math.max(0, (100 * x) / d.total_mb).toFixed(2)}%`;
+  const capPct = d.cap_mb ? Math.min(100, (100 * d.clips_mb) / d.cap_mb) : 0;
+  const gb = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+  const est = d.per_day_mb > 0
+    ? `Recent barking adds about ${gb(d.per_day_mb)} of audio a day. ${d.audio_days_capacity ? `The cap holds roughly ${Math.round(d.audio_days_capacity)} days of clips` : ""}${d.audio_days_capacity && v["clips.retention_days"] ? `, and clips older than ${v["clips.retention_days"]} days are deleted anyway.` : "."}`
+    : "No recent clips yet, so there's no daily estimate.";
+  const capWarn = d.audio_days_capacity && v["clips.retention_days"] && d.audio_days_capacity < v["clips.retention_days"]
+    ? `<div class="notice">At this rate the disk cap fills before ${v["clips.retention_days"]} days, so the oldest clips will be removed early. Raise the cap to keep the full ${v["clips.retention_days"]} days.</div>` : "";
+  settingsForm("storage", "Storage", "", `
+    <div class="disk">
+      <div class="diskbar" role="img" aria-label="Disk usage: ${gb(d.clips_mb)} clips, ${gb(other + d.db_mb)} system and other, ${gb(d.free_mb)} free">
+        <span class="seg clips" style="width:${pct(d.clips_mb)}"></span><span class="seg db" style="width:${pct(d.db_mb)}"></span><span class="seg other" style="width:${pct(other)}"></span>
+      </div>
+      <div class="legend"><span style="--c:var(--ink)">Clips ${gb(d.clips_mb)} (${d.clip_count})</span><span style="--c:var(--muted)">Log database ${gb(d.db_mb)}</span><span style="--c:var(--unknown)">System and other ${gb(other)}</span><span style="--c:var(--faint)">Free ${gb(d.free_mb)} of ${gb(d.total_mb)}</span></div>
+      ${d.cap_mb ? `<div class="capline"><span>Clips are using ${Math.round(capPct)}% of the ${gb(d.cap_mb)} cap</span><div class="meter wide" style="--c:var(--ink)"><b style="width:${capPct}%"></b></div></div>` : ""}
+      <p class="small muted" style="margin:0">${est}${d.oldest_clip_ts ? ` The oldest clip is from ${fmtDay(d.oldest_clip_ts)}.` : ""}</p>
+      ${capWarn}
+    </div>
+    <div class="grid3">
+      ${fieldNum("clips.retention_days", "Keep clip audio for", v["clips.retention_days"], { unit: "days", min: 0, help: "0 keeps clips until the disk cap is reached. The log itself is never deleted." })}
+      ${fieldNum("clips.max_disk_mb", "Disk cap for clips", Math.round(v["clips.max_disk_mb"] / 1024 * 10) / 10, { unit: "GB", step: 0.5, min: 0, help: "Oldest clips are removed above this." })}
+      ${fieldNum("clips.max_clip_seconds", "Longest single clip", Math.round(v["clips.max_clip_seconds"] / 60), { unit: "minutes", min: 1, help: "Logging continues past this; the recording stops growing." })}
+      ${fieldNum("clips.preroll", "Audio kept before barking starts", v["clips.preroll"], { unit: "seconds", min: 0, max: 10, step: 0.5 })}
+      ${fieldNum("clips.postroll", "Audio kept after barking stops", v["clips.postroll"], { unit: "seconds", min: 0, max: 30, step: 0.5 })}
+    </div>`, async (vals) => {
+      vals["clips.max_disk_mb"] = Math.round(Number(vals["clips.max_disk_mb"]) * 1024);
+      vals["clips.max_clip_seconds"] = Number(vals["clips.max_clip_seconds"]) * 60;
+      await saveApp(vals, "Storage settings saved");
+    });
+}
+
+function drawDetection(st) {
+  const v = st.values;
+  settingsForm("detection", "Detection", "How sensitive the Pi is. If it misses barks, lower the bark confidence or the loudness trigger. If it logs things that aren't barks, raise them, or mark those clips “Not a bark”.", `
+    <label>Bark confidence needed <span class="unit"><input type="range" name="detection.bark_threshold" min="0.05" max="0.95" step="0.05" value="${v["detection.bark_threshold"]}" oninput="this.nextElementSibling.textContent=Math.round(this.value*100)+'%'"><output>${Math.round(v["detection.bark_threshold"] * 100)}%</output></span><span class="help">How sure the sound model must be. Default 35%.</span></label>
+    <div class="grid3">
+      ${fieldNum("detection.trigger_db", "Loudness trigger", v["detection.trigger_db"], { unit: "dB above background", min: 3, max: 30, help: "A sound must be this much louder than the room to be checked." })}
+      ${fieldNum("detection.min_level_dbfs", "Ignore sounds quieter than", v["detection.min_level_dbfs"], { unit: "dBFS", min: -90, max: -20 })}
+      ${fieldNum("audio.gain_db", "Microphone boost", v["audio.gain_db"], { unit: "dB", min: -12, max: 30, help: "Webcams adjust their own gain; leave at 0 unless barks look quiet." })}
+      ${fieldNum("detection.episode_gap", "Quiet time that ends an episode", v["detection.episode_gap"], { unit: "seconds", min: 1, max: 120, step: 0.5 })}
+      ${fieldNum("detection.min_episode_barks", "Smallest episode to keep", v["detection.min_episode_barks"], { unit: "barks", min: 1, max: 50, help: "2 skips single woofs." })}
+    </div>
+    ${fieldCheck("detection.suppress_learned_false_positives", "Drop sounds that match clips marked “Not a bark”", v["detection.suppress_learned_false_positives"])}`,
+    (vals) => saveApp(vals, "Detection settings saved"),
+    `<button type="button" class="btn" id="resetApp">Restore config.yaml values</button>`);
+  $("#resetApp").onclick = async () => {
+    if (!confirm("Undo every dashboard change to storage, detection, alerts and matching, and go back to config.yaml?")) return;
+    const st2 = await api("/api/settings", { method: "PUT", body: { reset: true } });
+    toast("Restored config.yaml values"); drawStorage(st2); drawDetection(st2); drawNotify(st2);
+  };
+}
+
+function drawNotify(st) {
+  const v = st.values;
+  settingsForm("notify", "Alerts and dog matching", "", `
+    <div class="two">
+      ${fieldText("notify.webhook_url", "Alert address (webhook)", v["notify.webhook_url"], { type: "url", placeholder: "https://ntfy.sh/your-topic", help: "Gets a message when an episode ends. Works with ntfy, Home Assistant and similar." })}
+      ${fieldNum("notify.min_duration", "Only alert for episodes longer than", v["notify.min_duration"], { unit: "seconds", min: 0 })}
+      ${fieldNum("identify.min_labels_per_dog", "Labelled barks needed before matching a dog", v["identify.min_labels_per_dog"], { unit: "barks", min: 1, max: 100 })}
+      <label>How sure a match must be <span class="unit"><input type="range" name="identify.min_confidence" min="0.3" max="0.95" step="0.05" value="${v["identify.min_confidence"]}" oninput="this.nextElementSibling.textContent=Math.round(this.value*100)+'%'"><output>${Math.round(v["identify.min_confidence"] * 100)}%</output></span><span class="help">Less sure matches stay “Unidentified”.</span></label>
+    </div>`, (vals) => saveApp(vals, "Alert and matching settings saved"));
+}
+
+function drawCode(r) {
+  const th = r.ordinance.thresholds;
+  const el = settingsForm("code", "Code parameters", `${r.ordinance.preset === "burnsville_mn" ? "Burnsville's code says “habitually or frequently” without numbers, so these are your documentation criteria, not legal limits." : "Match these to your ordinance, or to what you consider reportable."} They decide which incidents reports and the overview highlight.`, `
+    <div class="grid3">
+      ${fieldNum("sustained_minutes", "Sustained barking", th.sustained_minutes, { unit: "minutes or longer", min: 0 })}
+      ${fieldNum("max_pause_seconds", "Break allowed within one incident", th.max_pause_seconds, { unit: "seconds", min: 0 })}
+      ${fieldNum("daily_minutes", "Frequent day", th.daily_minutes, { unit: "minutes in a day", min: 0 })}
+      <label>Quiet hours start<input type="time" name="quiet_start" value="${th.quiet_start}" required></label>
+      <label>Quiet hours end<input type="time" name="quiet_end" value="${th.quiet_end}" required></label>
+      ${fieldNum("quiet_minutes", "Flag in quiet hours after", th.quiet_minutes, { unit: "minutes", min: 0 })}
+      ${fieldNum("habitual_days", "Habitual pattern", th.habitual_days, { unit: "days meeting a criterion", min: 0 })}
+      ${fieldNum("habitual_window_days", "…within", th.habitual_window_days, { unit: "days", min: 1 })}
+    </div>
+    <ul class="criteria">${Object.entries(r.criteria).map(([k, v]) => `<li><strong>${FLAG_NAMES[k]}</strong>: ${esc(v)}</li>`).join("")}</ul>`,
+    async (vals) => {
+      const res = await api("/api/ordinance", { method: "PUT", body: { thresholds: vals } });
+      toast("Code parameters saved"); drawCode(res);
+    });
+  return el;
+}
+
+function drawOrdinance(r) {
+  const o = r.ordinance;
+  settingsForm("ordinance", "Ordinance and contacts", `The rule your complaint reports cite. Defaults are for ${esc(o.jurisdiction)}.${o.source_url ? ` <a href="${esc(o.source_url)}" target="_blank" rel="noopener">Read the code on the city's site</a>; check it before filing, since codes change.` : ""}`, `
+    <div class="row"><label class="inline">Preset <select id="preset">${r.presets.map((p) => `<option value="${p.id}" ${p.id === o.preset ? "selected" : ""}>${esc(p.label)}</option>`).join("")}<option value="custom" ${r.presets.some((p) => p.id === o.preset) ? "" : "selected"}>Custom</option></select></label></div>
+    ${fieldText("jurisdiction", "Jurisdiction", o.jurisdiction)}
+    ${fieldText("code_section", "Code section", o.code_section)}
+    <label>What the rule says (in plain words)<textarea name="rule_text" rows="3">${esc(o.rule_text)}</textarea></label>
+    <label>Notes<textarea name="rule_note" rows="3">${esc(o.rule_note)}</textarea></label>
+    <div class="two">${fieldText("source_url", "Source link", o.source_url, { type: "url" })}${fieldText("penalty", "Penalty", o.penalty)}</div>
+    <label>Where to report<textarea name="contacts" rows="4">${esc(o.contacts.map((c) => `${c.name} | ${c.phone}`).join("\n"))}</textarea><span class="help">One per line: name, a vertical bar, then phone or web address. Printed at the end of reports.</span></label>
+    <h3>Your details</h3>
+    <p class="small muted intro">Printed on reports as the person submitting the log. Stored only on this Pi.</p>
+    <div class="two">${["name", "address", "phone", "email"].map((k) => fieldText(`reporter.${k}`, k[0].toUpperCase() + k.slice(1), r.reporter[k], { type: k === "email" ? "email" : "text" })).join("")}</div>`,
+    async (vals) => {
+      const body = {};
+      for (const k of ["jurisdiction", "code_section", "rule_text", "rule_note", "source_url", "penalty"]) body[k] = vals[k];
+      body.contacts = String(vals.contacts).split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+        const [name, ...rest] = l.split("|"); return { name: name.trim(), phone: rest.join("|").trim() };
+      });
+      const preset = $("#preset").value;
+      body.preset = preset === "custom" || ["jurisdiction", "code_section", "rule_text"].some((k) => body[k] !== o[k]) ? "custom" : preset;
+      const reporter = Object.fromEntries(["name", "address", "phone", "email"].map((k) => [k, vals[`reporter.${k}`]]));
+      await Promise.all([api("/api/ordinance", { method: "PUT", body }), api("/api/reporter", { method: "PUT", body: reporter })]);
+      toast("Ordinance and your details saved");
+      const fresh = await api("/api/ordinance"); drawOrdinance(fresh); drawCode(fresh);
+    },
+    `<button type="button" class="btn" id="resetOrd">Reset to preset</button>`);
   $("#resetOrd").onclick = async () => {
     const preset = $("#preset").value === "custom" ? "burnsville_mn" : $("#preset").value;
-    if (!confirm("Replace the rule, criteria and contacts with the preset?")) return;
-    await api("/api/ordinance", { method: "PUT", body: { reset: true, preset } }); toast("Reset to preset"); renderOrdinance();
+    if (!confirm("Replace the rule, code parameters and contacts with the preset? Your details are kept.")) return;
+    await api("/api/ordinance", { method: "PUT", body: { reset: true, preset } }); toast("Reset to preset");
+    const fresh = await api("/api/ordinance"); drawOrdinance(fresh); drawCode(fresh);
   };
-  $("#repForm").onsubmit = async (ev) => {
-    ev.preventDefault();
-    await api("/api/reporter", { method: "PUT", body: Object.fromEntries(new FormData(ev.target)) }); toast("Your details saved");
+}
+
+function drawPictures(m) {
+  const col = (kind, title, help) => {
+    const items = m[kind], own = items.some((i) => i.own);
+    return `<div class="piccol">
+      <h3>${title}</h3><p class="small muted intro">${help}${own ? "" : " Showing the built-in drawings until you add your own."}</p>
+      <div class="thumbs">${items.map((i) => `<figure class="thumb">${i.video ? `<video src="${i.url}" muted loop autoplay playsinline></video>` : `<img src="${i.url}" alt="">`}
+        <figcaption>${esc(i.name)}${i.own ? ` <button type="button" class="linkbtn" data-delpic="${kind}/${esc(i.name)}" aria-label="Remove ${esc(i.name)}">Remove</button>` : ""}</figcaption></figure>`).join("")}</div>
+      <label class="btn upload">Add pictures<input type="file" accept="image/*,video/mp4,video/webm" multiple data-up="${kind}" hidden></label>
+    </div>`;
   };
+  $("#sec-pictures").innerHTML = `<div class="panel form">
+    <h2>Heartbeat pictures</h2>
+    <p class="small muted intro">The band at the top of every page shows a random calm picture while it's quiet and a random barking one while a dog is barking. Photos, GIFs, SVGs and short MP4 or WebM loops all work. You can also copy files straight into <code>${esc(m.folder)}/idle</code> and <code>/bark</code> on the Pi.</p>
+    <div class="two">${col("idle", "Calm", "Shown while it's quiet.")}${col("bark", "Barking", "Shown while a bark is being detected.")}</div>
+  </div>`;
+  $("#sec-pictures").querySelectorAll("[data-up]").forEach((inp) => inp.addEventListener("change", async () => {
+    let r = m;
+    for (const f of inp.files) {
+      try { r = await fetch(`/api/media/${inp.dataset.up}/${encodeURIComponent(f.name)}`, { method: "PUT", body: f }).then(async (x) => { if (!x.ok) throw new Error((await x.json()).detail); return x.json(); }); }
+      catch (e) { toast(`${f.name}: ${e.message}`); }
+    }
+    toast("Pictures added"); drawPictures(r); Beat.loadMedia();
+  }));
+  $("#sec-pictures").querySelectorAll("[data-delpic]").forEach((b) => b.addEventListener("click", async () => {
+    const r = await api(`/api/media/${b.dataset.delpic.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
+    toast("Picture removed"); drawPictures(r); Beat.loadMedia();
+  }));
+}
+
+function drawSystem(st) {
+  $("#sec-system").innerHTML = `<div class="panel form">
+    <h2>System</h2>
+    <div id="lvl"></div>
+    <p class="small muted intro">Live microphone level. Grey is the background noise the Pi has learned; sounds above the dashed line wake the bark detector.</p>
+    <div class="two"><dl class="kv" id="detKv"></dl><dl class="kv" id="sysKv"></dl></div>
+    <div class="row"><a class="btn" href="/api/export.csv">Download full log as CSV</a></div>
+  </div>`;
+  S.settingsInfo = st.info;
+  renderSystemLive();
 }
 const FLAG_NAMES = { sustained: "Sustained", quiet_hours: "Quiet hours", frequent: "Frequent day", habitual: "Habitual pattern" };
 
@@ -669,7 +788,7 @@ async function renderReport() {
         <a class="btn" href="/api/report.csv?${reportQuery()}&kind=daily">Daily totals CSV</a>
         <a class="btn" href="/api/report/clips.zip?${reportQuery()}">Clips and CSV (.zip)</a>
       </div>
-      ${rep.reporter.name ? "" : `<p class="small muted" style="margin:0;grid-column:1/-1">Add your name and contact details on the <a href="#/ordinance">Ordinance</a> page so they print on the report.</p>`}
+      ${rep.reporter.name ? "" : `<p class="small muted" style="margin:0;grid-column:1/-1">Add your name and contact details on the <a href="#/settings/ordinance">Settings</a> page so they print on the report.</p>`}
       ${R.subject !== "all" && rep.subject.kind === "dog" && !rep.subject.address ? `<p class="small muted" style="margin:0;grid-column:1/-1">Add this dog's owner and address on the <a href="#/dogs">Dogs</a> page so they print on the report.</p>` : ""}
     </section>
     ${reportDoc(rep)}`;
@@ -754,23 +873,11 @@ function reportDoc(rep) {
   </article>`;
 }
 
-// ----------------------------------------------------------------- system
-function renderSystem() {
-  view.innerHTML = `
-    <section><h1>System</h1><p class="sub">Live microphone level and detector health.</p></section>
-    <section class="panel"><h2>Microphone</h2><div id="lvl"></div>
-      <p class="small muted" style="margin:6px 0 0">Grey is the background noise level the Pi has learned; sounds above the dashed line wake the bark detector. If normal room noise keeps crossing it, raise <code>trigger_db</code>. If barks don't reach it, move the mic closer or add <code>gain_db</code>.</p></section>
-    <section class="grid2">
-      <div class="panel"><h2>Detector</h2><dl class="kv" id="detKv"></dl></div>
-      <div class="panel"><h2>Storage</h2><dl class="kv" id="diskKv"></dl>
-        <div class="row" style="margin-top:14px"><a class="btn" href="/api/export.csv">Download log as CSV</a></div></div>
-    </section>`;
-  renderSystemLive();
-}
+// ------------------------------------------------------------ system live
 function renderSystemLive() {
   const s = S.status; if (!s || !$("#lvl")) return;
   const d = s.detector;
-  if (!d) { $("#lvl").innerHTML = `<div class="notice ${s.error ? "err" : ""}">${s.error ? esc(s.error) : "Not listening: started with --no-audio."}</div>`; }
+  if (!d) { $("#lvl").innerHTML = `<div class="notice ${s.error ? "err" : ""}">${s.error ? esc(s.error) : "Not listening: started without audio."}</div>`; }
   else {
     const hist = d.history, W = 1000, H = 140, lo = -90, hi = 0;
     const y = (v) => H - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * H;
@@ -780,29 +887,186 @@ function renderSystemLive() {
     for (let v = -80; v < 0; v += 20) g += `<line x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--faint)"/><text x="4" y="${y(v) - 3}">${v} dB</text>`;
     g += `<polyline points="${pts(2)}" fill="none" stroke="var(--unknown)" stroke-width="2"/>`;
     g += `<line x1="0" x2="${W}" y1="${y(d.trigger_db)}" y2="${y(d.trigger_db)}" stroke="var(--ink)" stroke-dasharray="5 4"/>`;
-    g += `<polyline points="${pts(1)}" fill="none" stroke="${d.barking_now ? "var(--live)" : "var(--ink)"}" stroke-width="1.5"/>`;
+    g += `<polyline points="${pts(1)}" fill="none" stroke="${d.barking_now ? "var(--bark)" : "var(--ink)"}" stroke-width="1.5"/>`;
     $("#lvl").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Input level over the last minute">${g}</svg>`;
   }
   const det = $("#detKv");
   if (det) det.innerHTML = d ? `
       <dt>Detector</dt><dd>${d.classifier === "yamnet" ? "YAMNet sound model" : "Basic (no model installed)"}</dd>
-      <dt>Level now</dt><dd>${d.level_db} dBFS</dd>
-      <dt>Background</dt><dd>${d.floor_db} dBFS</dd>
-      <dt>Last check</dt><dd>${Math.round(d.last_prob * 100)}% bark${d.last_detail?.top ? ` · heard “${esc(d.last_detail.top)}”` : ""} · ${d.classify_ms} ms</dd>
-      <dt>Barks since start</dt><dd>${d.stats.barks || 0} (${d.stats.suppressed || 0} ignored as known false alarms)</dd>
-      <dt>Dog matching</dt><dd>${s.identifier.ready ? "On" : `Waiting for ${s.identifier.min_labels}+ labels per dog`}</dd>
       <dt>Microphone</dt><dd>${esc(s.audio_device || "Default input")}</dd>
-      <dt>Clock</dt><dd>${s.clock?.ntp_synced === true ? "Synchronized to internet time" : s.clock?.ntp_synced === false ? "Not synchronized: report timestamps may drift" : "Unknown"}</dd>
-      <dt>Running for</dt><dd>${fmtDur(d.uptime_s)}</dd>` : `<dt>Status</dt><dd>Not listening</dd>`;
-  const dk = $("#diskKv");
-  if (dk) dk.innerHTML = `
-      <dt>Clips</dt><dd>${s.disk.clips_mb} MB of ${s.disk.cap_mb} MB cap</dd>
-      <dt>Free space</dt><dd>${(s.disk.free_mb / 1024).toFixed(1)} GB</dd>
-      <dt>Keeping audio</dt><dd>${s.settings.retention_days} days</dd>
+      <dt>Level now</dt><dd>${d.level_db} dBFS (background ${d.floor_db})</dd>
+      <dt>Last check</dt><dd>${Math.round(d.last_prob * 100)}% bark${d.last_detail?.top ? `, heard “${esc(d.last_detail.top)}”` : ""} in ${d.classify_ms} ms</dd>
+      <dt>Barks since start</dt><dd>${d.stats.barks || 0} (${d.stats.suppressed || 0} ignored as known false alarms)</dd>
+      <dt>Dog matching</dt><dd>${s.identifier.ready ? "On" : `Waiting for ${s.identifier.min_labels}+ labels per dog`}</dd>` : `<dt>Status</dt><dd>Not listening</dd>`;
+  const sys = $("#sysKv");
+  if (sys) sys.innerHTML = `
+      <dt>Clock</dt><dd>${s.clock?.ntp_synced === true ? "Synchronized to internet time" : s.clock?.ntp_synced === false ? "Not synchronized: timestamps may drift" : "Unknown"}</dd>
+      <dt>Time zone</dt><dd>${esc(s.settings.timezone)}</dd>
+      <dt>Running for</dt><dd>${d ? fmtDur(d.uptime_s) : "–"}</dd>
       <dt>Episodes logged</dt><dd>${s.counts.episodes} (${s.counts.unreviewed || 0} not reviewed)</dd>
-      <dt>Episode gap</dt><dd>${s.settings.episode_gap} s of quiet ends an episode</dd>`;
+      <dt>Data folder</dt><dd><code>${esc(S.settingsInfo?.data_dir || "")}</code></dd>`;
 }
 
+// -------------------------------------------------------------- heartbeat
+// The band at the top of every page: a random calm picture while it's quiet, a random
+// barking picture while a bark is being detected, a heartbeat trace, and BARK splashes.
+const Beat = (() => {
+  const band = $("#beat"), mediaEl = $("#beatMedia"), splash = $("#splash");
+  const title = $("#beatTitle"), sub = $("#beatSub"), canvas = $("#beatTrace");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let media = { idle: [], bark: [] }, state = "connecting", shown = { idle: null, bark: null }, lastBarks = null;
+  let idleSince = Date.now(), failures = 0, prevState = "connecting";
+  const WORDS = ["BARK", "BARK!", "Bark!", "BARK!!", "bark", "BARK"];
+
+  async function loadMedia() {
+    try { media = await api("/api/media"); } catch (_) { return; }
+    shown = { idle: null, bark: null };
+    show(state === "barking" ? "bark" : "idle", true);
+  }
+  function pick(kind) {
+    const list = media[kind] || [];
+    if (!list.length) return null;
+    if (list.length === 1) return list[0];
+    let item; do { item = list[Math.floor(Math.random() * list.length)]; } while (item.url === shown[kind]?.url);
+    return item;
+  }
+  function show(kind, force = false) {
+    if (!force && mediaEl.dataset.kind === kind) return;
+    const item = pick(kind); if (!item) return;
+    shown[kind] = item; mediaEl.dataset.kind = kind;
+    const el = document.createElement(item.video ? "video" : "img");
+    if (item.video) Object.assign(el, { muted: true, loop: true, autoplay: true, playsInline: true });
+    else el.alt = "";
+    el.src = item.url;
+    const old = [...mediaEl.children];
+    const reveal = () => { requestAnimationFrame(() => el.classList.add("on")); setTimeout(() => old.forEach((o) => o.remove()), 400); };
+    el.addEventListener(item.video ? "loadeddata" : "load", reveal, { once: true });
+    el.addEventListener("error", reveal, { once: true });
+    mediaEl.appendChild(el);
+  }
+
+  function spawn(n) {
+    const count = Math.min(5, Math.max(1, n)) + (Math.random() < 0.5 ? 1 : 0);
+    const big = document.body.classList.contains("kiosk") ? 2.6 : 1;
+    for (let i = 0; i < (reduce.matches ? 1 : count); i++) {
+      const w = document.createElement("span");
+      w.className = "splash-word";
+      w.textContent = WORDS[Math.floor(Math.random() * WORDS.length)];
+      const size = (14 + Math.random() ** 1.6 * 44) * big;
+      w.style.cssText = `--fs:${size.toFixed(0)}px;--rot:${(Math.random() * 56 - 28).toFixed(1)}deg;` +
+        `--dur:${(1.3 + Math.random() * 1.1).toFixed(2)}s;--delay:${(i * 0.09).toFixed(2)}s;` +
+        `left:${(4 + Math.random() * 88).toFixed(1)}%;top:${(12 + Math.random() * 72).toFixed(1)}%`;
+      w.addEventListener("animationend", () => w.remove());
+      splash.appendChild(w);
+      setTimeout(() => w.remove(), 4000);
+    }
+  }
+
+  function setState(next, info = {}) {
+    const prev = state; state = next;
+    band.dataset.state = next;
+    if (next === "barking") {
+      title.textContent = "Barking";
+      sub.textContent = info.episode_barks ? `${info.episode_barks} bark${info.episode_barks === 1 ? "" : "s"} so far` : "just now";
+      show("bark");
+    } else if (next === "idle") {
+      title.textContent = "Quiet";
+      sub.textContent = info.level_db != null ? `Listening, room at ${Math.round(info.level_db)} dB` : "Listening";
+      if (prev !== "idle") { idleSince = Date.now(); show("idle"); }
+      else if (Date.now() - idleSince > 90000) { idleSince = Date.now(); show("idle", true); }
+    } else if (next === "off") {
+      title.textContent = "Not listening"; sub.textContent = "Started without a microphone"; show("idle");
+    } else {
+      title.textContent = info.title || "Can't reach the Pi"; sub.textContent = info.sub || "Retrying…"; show("idle");
+    }
+  }
+
+  async function poll() {
+    if (document.hidden) return;
+    try {
+      const l = await api("/api/live");
+      failures = 0;
+      if (l.error && l.state !== "barking") setState("error", { title: "Microphone problem", sub: l.error });
+      else setState(l.state, l);
+      const started = state === "barking" && prevState !== "barking";
+      if (lastBarks !== null && l.barks > lastBarks) spawn(l.barks - lastBarks + (started ? 2 : 0));
+      else if (started) spawn(3);
+      prevState = state;
+      lastBarks = l.barks;
+    } catch (_) {
+      if (++failures >= 3) setState("error");
+    }
+  }
+
+  // heartbeat trace: an ECG-style line; slow and calm when idle, fast and tall when barking
+  const ctx = canvas.getContext("2d");
+  let phase = 0, last = performance.now(), buf = [];
+  function beatShape(t) {          // t in [0,1) within one beat
+    if (t < 0.08) return 0.12 * Math.sin((t / 0.08) * Math.PI);
+    if (t < 0.12) return -0.18 * Math.sin(((t - 0.08) / 0.04) * Math.PI);
+    if (t < 0.18) return 1.0 * Math.sin(((t - 0.12) / 0.06) * Math.PI);
+    if (t < 0.24) return -0.32 * Math.sin(((t - 0.18) / 0.06) * Math.PI);
+    if (t < 0.42) return 0.22 * Math.sin(((t - 0.26) / 0.16) * Math.PI) * (t > 0.26 ? 1 : 0);
+    return 0;
+  }
+  function frame(now) {
+    const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      buf = Array.from({ length: Math.ceil(W) }, () => ({ v: 0, s: state }));   // full-width flat line
+    }
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    const period = state === "barking" ? 0.42 : state === "idle" ? 1.15 : 0;
+    const amp = state === "barking" ? 1 : 0.55;
+    const speed = 90;                                // px per second
+    const steps = Math.max(1, Math.round(speed * dt));
+    for (let i = 0; i < steps; i++) {
+      let v = 0;
+      if (period) { phase = (phase + dt / steps / period) % 1; v = beatShape(phase) * amp; }
+      else v = (Math.random() - 0.5) * 0.03;
+      buf.push({ v, s: state });
+    }
+    if (buf.length > W) buf.splice(0, buf.length - W);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const css = getComputedStyle(band);
+    const color = (st) => css.getPropertyValue(st === "barking" ? "--bark" : st === "idle" ? "--ink" : "--unknown").trim();
+    const mid = H * 0.62, scale = H * 0.5, off = W - buf.length;
+    ctx.lineJoin = "round";
+    let i = 0;
+    while (i < buf.length) {                          // one stroke per stretch of the same state
+      const st = buf[i].s; let j = i;
+      ctx.beginPath(); ctx.strokeStyle = color(st); ctx.lineWidth = st === "barking" ? 2.2 : 1.6;
+      ctx.moveTo(off + i, mid - buf[i].v * scale);
+      while (j + 1 < buf.length && buf[j + 1].s === st) { j++; ctx.lineTo(off + j, mid - buf[j].v * scale); }
+      if (j + 1 < buf.length) ctx.lineTo(off + j + 1, mid - buf[j + 1].v * scale);
+      ctx.stroke(); i = j + 1;
+    }
+    if (buf.length) {                                  // leading dot
+      const lastPt = buf[buf.length - 1];
+      ctx.fillStyle = color(lastPt.s); ctx.beginPath();
+      ctx.arc(W - 1.5, mid - lastPt.v * scale, 3, 0, Math.PI * 2); ctx.fill();
+    }
+    if (!reduce.matches) requestAnimationFrame(frame);
+  }
+  function drawStatic() { last = performance.now() - 1000; buf = []; for (let i = 0; i < 12; i++) frame(last + 100 * (i + 1)); }
+
+  function start() {
+    loadMedia();
+    poll(); setInterval(poll, 600);
+    if (reduce.matches) { drawStatic(); setInterval(drawStatic, 1500); } else requestAnimationFrame(frame);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { last = performance.now(); poll(); } });
+  }
+  return { start, loadMedia, spawn };
+})();
+
+// ------------------------------------------------------------- kiosk view
+function renderLive() {
+  view.innerHTML = `<a class="kiosk-exit btn" href="#/">Back to dashboard</a>`;
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && route.name === "live") location.hash = "#/"; });
+
 // -------------------------------------------------------------------- go
+Beat.start();
 pollStatus().finally(navigate);
 setInterval(pollStatus, 2000);

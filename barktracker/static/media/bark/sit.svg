@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+<style>
+.head{transform-box:view-box;transform-origin:240px 140px;animation:h .42s ease-in-out infinite}
+@keyframes h{0%,100%{transform:rotate(-14deg)}50%{transform:rotate(-20deg) translateY(-4px)}}
+.jaw{transform-box:view-box;transform-origin:270px 126px;animation:j .42s ease-in-out infinite}
+@keyframes j{0%,100%{transform:rotate(8deg)}50%{transform:rotate(32deg)}}
+.arc{fill:none;stroke:#c2453d;stroke-width:6;stroke-linecap:round;opacity:0;animation:a .84s ease-out infinite}
+.a2{animation-delay:.14s}.a3{animation-delay:.28s}
+@keyframes a{0%{opacity:0}30%{opacity:1}100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.head,.jaw{animation:none}.head{transform:rotate(-16deg)}.jaw{transform:rotate(26deg)}.arc{animation:none;opacity:.8}}
+</style>
+<rect width="400" height="300" fill="#f6e1dc"/>
+<rect y="252" width="400" height="48" fill="#e8c4bc"/>
+<path d="M92 196 C100 222 112 232 132 236" fill="none" stroke="#c98f55" stroke-width="15" stroke-linecap="round"/>
+<ellipse cx="175" cy="210" rx="58" ry="46" fill="#d9a066"/>
+<ellipse cx="226" cy="178" rx="40" ry="60" fill="#d9a066" transform="rotate(-18 226 178)"/>
+<ellipse cx="238" cy="196" rx="20" ry="38" fill="#f1d3a8" transform="rotate(-18 238 196)"/>
+<rect x="232" y="196" width="19" height="58" rx="9" fill="#c98f55"/>
+<ellipse cx="166" cy="250" rx="34" ry="9" fill="#c98f55"/>
+<ellipse cx="247" cy="252" rx="17" ry="7" fill="#c98f55"/>
+<g class="head">
+  <path d="M268 122 L318 122 L312 146 L268 144 Z" fill="#7a2c2c"/>
+  <g class="jaw"><rect x="266" y="124" width="46" height="14" rx="7" fill="#e6b47c"/><rect x="274" y="125" width="6" height="7" fill="#fff"/></g>
+  <circle cx="256" cy="106" r="37" fill="#d9a066"/>
+  <rect x="266" y="100" width="54" height="26" rx="13" fill="#e6b47c"/>
+  <rect x="306" y="124" width="6" height="7" fill="#fff"/>
+  <circle cx="318" cy="105" r="7.5" fill="#2a2a2a"/>
+  <circle cx="268" cy="93" r="5.5" fill="#2a2a2a"/>
+  <path d="M260 83 l16 5" stroke="#2a2a2a" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M238 74 C222 84 220 122 236 136 C246 122 248 92 246 76 Z" fill="#8a5a33"/>
+  <rect x="222" y="138" width="46" height="9" rx="4" fill="#3f6fb5" transform="rotate(-12 245 142)"/>
+</g>
+<path class="arc" d="M332 70 q20 14 18 40"/>
+<path class="arc a2" d="M344 54 q32 22 28 62"/>
+<path class="arc a3" d="M356 38 q40 28 34 80"/>
+</svg>

@@ -13,6 +13,7 @@ from .clips import enforce_retention
 from .config import Config
 from .detector import BarkDetector, run_source
 from .identify import DogIdentifier, retrain_and_repredict
+from . import settings as settings_mod
 from .storage import Store
 
 log = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class BarkApp:
         self.cfg = cfg
         cfg.clips_path.mkdir(parents=True, exist_ok=True)
         self.store = Store(cfg.db_path)
+        self.defaults = settings_mod.apply_saved(cfg, self.store)   # dashboard overrides
         self.recover()
         ic = cfg.identify
         self.identifier = DogIdentifier(ic.k, ic.min_labels_per_dog, ic.min_confidence) if ic.enabled else None
@@ -64,6 +66,27 @@ class BarkApp:
             except Exception:  # noqa: BLE001
                 log.exception("Retention failed")
             self.stop.wait(3600)
+
+    def update_settings(self, changes: dict) -> list[str]:
+        changed = settings_mod.update(self.cfg, self.store, changes, self.defaults)
+        self._settings_side_effects(changed)
+        return changed
+
+    def reset_settings(self) -> None:
+        settings_mod.reset(self.cfg, self.store, self.defaults)
+        self._settings_side_effects(list(settings_mod.SPECS))
+
+    def _settings_side_effects(self, changed: list[str]) -> None:
+        if "audio.gain_db" in changed and hasattr(self.source, "gain"):
+            self.source.gain = 10 ** (self.cfg.audio.gain_db / 20)
+        if any(k.startswith("identify.") for k in changed) and self.identifier:
+            self.identifier.min_conf = self.cfg.identify.min_confidence
+            self.identifier.min_labels = self.cfg.identify.min_labels_per_dog
+            threading.Thread(target=self.retrain, daemon=True).start()
+        if any(k in changed for k in ("clips.retention_days", "clips.max_disk_mb")):
+            threading.Thread(target=lambda: enforce_retention(
+                self.store, self.cfg.clips_path, self.cfg.clips.retention_days,
+                self.cfg.clips.max_disk_mb), daemon=True).start()
 
     def retrain(self) -> dict:
         if not self.identifier:

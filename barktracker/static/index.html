@@ -15,11 +15,17 @@
     <a href="#/clips" data-nav="clips">Clips</a>
     <a href="#/dogs" data-nav="dogs">Dogs</a>
     <a href="#/report" data-nav="report">Report</a>
-    <a href="#/ordinance" data-nav="ordinance">Ordinance</a>
-    <a href="#/system" data-nav="system">System</a>
+    <a href="#/settings" data-nav="settings">Settings</a>
   </nav>
-  <span class="live" id="live" role="status"><i></i><span>Connecting…</span></span>
 </header>
+<section class="beat" id="beat" data-state="idle" aria-label="Live listening status">
+  <a class="beat-frame" id="beatFrame" href="#/live" aria-label="Open full-screen live view"><div class="beat-media" id="beatMedia"></div></a>
+  <div class="beat-info">
+    <p class="beat-title" role="status" aria-live="polite"><strong id="beatTitle">Connecting…</strong> <span id="beatSub"></span></p>
+    <canvas class="beat-trace" id="beatTrace" height="56" aria-hidden="true"></canvas>
+  </div>
+  <div class="splash" id="splash" aria-hidden="true"></div>
+</section>
 <main id="view"></main>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/static/app.js"></script>

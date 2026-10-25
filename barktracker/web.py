@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -21,11 +21,15 @@ from pydantic import BaseModel
 
 from . import features as F
 from . import ordinance as O
+from . import settings as S
 from .app import BarkApp
 from .audio import read_wav
 from .storage import NOT_BARK
 
 STATIC = Path(__file__).parent / "static"
+MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
+               ".webp": "image/webp", ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm"}
+VIDEO = {".mp4", ".webm"}
 
 
 class DogIn(BaseModel):
@@ -383,6 +387,86 @@ def create_app(bark: BarkApp) -> FastAPI:
                         e["reviewed"], e["note"] or ""])
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": "attachment; filename=barktracker.csv"})
+
+    # ---- app settings ---------------------------------------------------------
+    @app.get("/api/settings")
+    def get_settings():
+        return {"values": S.current(cfg), "defaults": bark.defaults,
+                "overridden": sorted((store.get_meta(S.META_KEY) or {}).keys()),
+                "disk": S.disk_usage(cfg, store),
+                "info": {"timezone": cfg.timezone or "system", "data_dir": str(cfg.data_path),
+                         "media_dir": str(cfg.media_path), "model": bark.detector.classifier.name if bark.detector else None,
+                         "audio_device": getattr(bark.source, "device_name", None)}}
+
+    @app.put("/api/settings")
+    def put_settings(body: dict = Body(...)):
+        try:
+            if body.get("reset"):
+                bark.reset_settings()
+            else:
+                bark.update_settings(body.get("values", {}))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return get_settings()
+
+    # ---- heartbeat: live state + idle/bark pictures -------------------------------
+    @app.get("/api/live")
+    def live():
+        d = bark.detector
+        if d is None:
+            return {"state": "off", "barks": 0, "level_db": None}
+        ep = d.ep
+        recent = (time.time() - d.last_bark_wall) < 2.5 if d.last_bark_wall else False
+        return {"state": "barking" if (ep is not None or recent) else "idle",
+                "barks": d.stats.get("barks", 0), "episode_barks": ep.barks if ep else 0,
+                "level_db": round(d.prev_level, 1), "floor_db": round(d.floor or -90, 1),
+                "error": bark.error}
+
+    def media_dir(kind: str) -> Path:
+        if kind not in ("idle", "bark"):
+            raise HTTPException(404)
+        return cfg.media_path / kind
+
+    def list_media(kind: str) -> list[dict]:
+        own = [p for p in sorted(media_dir(kind).glob("*")) if p.suffix.lower() in MEDIA_TYPES and p.is_file()]
+        if own:
+            return [{"url": f"/media/{kind}/{p.name}", "name": p.name, "own": True,
+                     "video": p.suffix.lower() in VIDEO} for p in own]
+        builtin = sorted((STATIC / "media" / kind).glob("*"))
+        return [{"url": f"/static/media/{kind}/{p.name}", "name": p.name, "own": False,
+                 "video": p.suffix.lower() in VIDEO} for p in builtin if p.suffix.lower() in MEDIA_TYPES]
+
+    @app.get("/api/media")
+    def media():
+        return {"idle": list_media("idle"), "bark": list_media("bark"), "folder": str(cfg.media_path)}
+
+    @app.get("/media/{kind}/{name}")
+    def media_file(kind: str, name: str):
+        p = (media_dir(kind) / name).resolve()
+        if p.parent != media_dir(kind).resolve() or not p.is_file() or p.suffix.lower() not in MEDIA_TYPES:
+            raise HTTPException(404)
+        return FileResponse(p, media_type=MEDIA_TYPES[p.suffix.lower()])
+
+    @app.put("/api/media/{kind}/{name}")
+    async def upload_media(kind: str, name: str, request: Request):
+        safe = "".join(c for c in Path(name).name if c.isalnum() or c in "._- ").strip()
+        if not safe or Path(safe).suffix.lower() not in MEDIA_TYPES:
+            raise HTTPException(400, "Use a JPG, PNG, GIF, WebP, SVG, MP4 or WebM file")
+        body = await request.body()
+        if len(body) > 40 * 2**20:
+            raise HTTPException(413, "Files must be under 40 MB")
+        d = media_dir(kind)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / safe).write_bytes(body)
+        return media()
+
+    @app.delete("/api/media/{kind}/{name}")
+    def delete_media(kind: str, name: str):
+        p = (media_dir(kind) / name).resolve()
+        if p.parent != media_dir(kind).resolve() or not p.is_file():
+            raise HTTPException(404)
+        p.unlink()
+        return media()
 
     # ---- ordinance & complaint reports ----------------------------------------
     @app.get("/api/ordinance")

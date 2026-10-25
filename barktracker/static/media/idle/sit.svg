@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+<style>
+.tail{transform-box:fill-box;transform-origin:100% 100%;animation:w 1.4s ease-in-out infinite}
+@keyframes w{50%{transform:rotate(-18deg)}}
+.eye{transform-box:fill-box;transform-origin:50% 50%;animation:k 5s infinite}
+@keyframes k{0%,94%,100%{transform:scaleY(1)}96%{transform:scaleY(.1)}}
+@media (prefers-reduced-motion:reduce){.tail,.eye{animation:none}}
+</style>
+<rect width="400" height="300" fill="#e4ecee"/>
+<rect y="252" width="400" height="48" fill="#c9d6da"/>
+<path class="tail" d="M92 186 C100 214 112 226 132 232" fill="none" stroke="#c98f55" stroke-width="15" stroke-linecap="round"/>
+<ellipse cx="175" cy="210" rx="58" ry="46" fill="#d9a066"/>
+<ellipse cx="226" cy="178" rx="40" ry="60" fill="#d9a066" transform="rotate(-18 226 178)"/>
+<ellipse cx="238" cy="196" rx="20" ry="38" fill="#f1d3a8" transform="rotate(-18 238 196)"/>
+<rect x="232" y="196" width="19" height="58" rx="9" fill="#c98f55"/>
+<ellipse cx="166" cy="250" rx="34" ry="9" fill="#c98f55"/>
+<ellipse cx="247" cy="252" rx="17" ry="7" fill="#c98f55"/>
+<circle cx="256" cy="110" r="37" fill="#d9a066"/>
+<rect x="266" y="104" width="54" height="27" rx="13.5" fill="#e6b47c"/>
+<path d="M286 130 q12 6 24 0" fill="none" stroke="#8a5a33" stroke-width="3" stroke-linecap="round"/>
+<circle cx="318" cy="110" r="7.5" fill="#2a2a2a"/>
+<circle class="eye" cx="268" cy="98" r="5.5" fill="#2a2a2a"/>
+<path d="M238 78 C222 88 220 126 236 140 C246 126 248 96 246 80 Z" fill="#8a5a33"/>
+<rect x="222" y="140" width="46" height="9" rx="4" fill="#3f6fb5" transform="rotate(-12 245 144)"/>
+</svg>

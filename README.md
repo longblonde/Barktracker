@@ -10,6 +10,7 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 - **Episodes, not just barks.** Barks less than 8 s apart (configurable) are grouped into one episode with a start time, duration, bark count and peak level.
 - **Clips for review.** Each episode is saved as a WAV with 2 s of lead-in and lead-out. The clip page shows a spectrogram with every bark marked; click a bark to hear it alone.
 - **Which dog.** Label a few barks per dog in the dashboard and new barks are matched to the closest voice automatically. Mark false alarms as "Not a bark" and similar sounds get ignored from then on.
+- **Heartbeat band on every page.** A live heartbeat trace and a picture of a calm dog that switches to a barking dog the moment a bark is detected, with red BARK splashes popping in at random sizes and angles. Use your own photos, GIFs or video loops. Click the picture for a full-screen view you can leave on a spare screen or tablet.
 - **Dashboard.** Plain-language daily summary, a 24-hour timeline coloured by dog, two-week totals, an hour-by-weekday heatmap, clip list with filters.
 - **Your local ordinance.** Enter the animal-noise rule that applies where you live (Burnsville, MN is the default) and the criteria for incidents worth reporting: sustained barking, barking in quiet hours, frequent days, habitual patterns.
 - **Complaint reports.** Per dog or per neighbor's household, for any date range: print or save as PDF, download a clean CSV, or download every clip plus the CSVs as a zip for evidence.
@@ -18,6 +19,8 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 ![Clip review](docs/clip.png)
 
 ![Complaint report](docs/report.png)
+
+![Settings](docs/settings.png)
 
 ## Hardware
 
@@ -28,9 +31,9 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 | microSD 32 GB+ or USB SSD | About 2 MB per minute of clip audio. |
 | Official Pi 4 power supply | Webcams draw extra current; under-powered Pis drop USB audio. |
 
-Point the webcam toward where the barking comes from (a window facing the neighbor's yard works well), away from fans and the fridge. Webcams apply automatic gain, so leave `gain_db` at 0 unless barks read quieter than -35 dBFS on the System page.
+Point the webcam toward where the barking comes from (a window facing the neighbor's yard works well), away from fans and the fridge. Webcams apply automatic gain, so leave `gain_db` at 0 unless barks read quieter than -35 dBFS in Settings → System.
 
-Timestamps matter for complaints. The Pi 4 has no battery-backed clock, so keep it on the network; the System page and every report say whether the clock is synchronized to internet time.
+Timestamps matter for complaints. The Pi 4 has no battery-backed clock, so keep it on the network; Settings → System and every report say whether the clock is synchronized to internet time.
 
 ## Install
 
@@ -50,7 +53,7 @@ sudo systemctl stop barktracker
 sudo systemctl start barktracker
 ```
 
-A quiet room should read around -60 to -45 dBFS and a bark well above -30. With several USB audio devices plugged in, set `audio.device` in `config.yaml` to part of the webcam's name (e.g. `C920`). The **System** page in the dashboard shows the live level, the learned background noise and the trigger line.
+A quiet room should read around -60 to -45 dBFS and a bark well above -30. With several USB audio devices plugged in, set `audio.device` in `config.yaml` to part of the webcam's name (e.g. `C920`). The **System** section of Settings shows the live level, the learned background noise and the trigger line.
 
 ## Using it
 
@@ -59,9 +62,27 @@ A quiet room should read around -60 to -45 dBFS and a bark well above -30. With 
 3. After **3+ labelled barks per dog**, new barks are matched automatically and older unlabelled barks are re-matched. Barks it isn't sure about stay "Unidentified". More labels from different days and distances make it better.
 4. **Mark false alarms** as "Not a bark". They drop out of the stats immediately, and after a few examples, similar sounds are filtered out before they're logged.
 
+## Settings
+
+Everything adjustable lives on the **Settings** page and takes effect immediately, no restart needed:
+
+- **Storage:** disk usage (clips, log, system, free space), how much audio recent barking adds per day and how many days the cap holds, clip retention, disk cap, clip length, pre and post roll.
+- **Detection:** bark confidence, loudness trigger, quiet floor, microphone boost, episode gap, smallest episode, ignoring learned false alarms.
+- **Code parameters:** quiet hours, sustained-barking minutes, allowed break, frequent-day total, habitual pattern.
+- **Ordinance and contacts:** rule text, code section, source, penalty, where to report, and your details for reports.
+- **Heartbeat pictures:** add or remove calm and barking pictures.
+- **Alerts and dog matching:** webhook, alert threshold, matching confidence.
+- **System:** live mic level, detector status, clock sync.
+
+Dashboard changes are stored on the Pi as overrides of `config.yaml`; "Restore config.yaml values" undoes them.
+
+## Heartbeat pictures
+
+Put calm pictures in `data/media/idle/` and barking pictures in `data/media/bark/` (or upload them on Settings). A random one is chosen each time the state changes, and the calm picture rotates every 90 seconds while it's quiet. JPG, PNG, GIF, WebP, SVG, MP4 and WebM all work; short muted loops look best. Until you add your own, four built-in drawings are used.
+
 ## Noise ordinance
 
-The **Ordinance** page holds the rule your reports cite and the criteria used to flag incidents. It starts with Burnsville, MN:
+The **Code parameters** and **Ordinance and contacts** sections of Settings hold the rule your reports cite and the criteria used to flag incidents. It starts with Burnsville, MN:
 
 - **Rule:** Burnsville City Code [§ 6-2-7](https://burnsville.municipalcodeonline.com/book?type=ordinances#name=6-2-7_Obligation_To_Prevent_Nuisances) makes it a nuisance for an animal to habitually or frequently bark, cry, howl or whimper so it disturbs others. It sets **no minute count and no animal-specific quiet hours**.
 - **Contacts:** police non-emergency dispatch for noise complaints (952-322-2323, 24/7), Burnsville Animal Control at American Boarding Kennels (952-894-3647), City Hall (952-895-4400).
@@ -74,7 +95,7 @@ The **Ordinance** page holds the rule your reports cite and the criteria used to
 | Frequent day | 30 min or more of barking in one day |
 | Habitual pattern | 3 or more days meeting a criterion within 7 days |
 
-Change any of it for another city: jurisdiction, code section, the rule in plain words, source link, penalty, contacts and criteria are all editable, and "Reset to preset" restores Burnsville. Check the current code before filing; ordinances change.
+Change any of it for another city on the Settings page: jurisdiction, code section, the rule in plain words, source link, penalty, contacts and criteria are all editable, and "Reset to preset" restores Burnsville. Check the current code before filing; ordinances change.
 
 ## Complaint reports
 
@@ -83,7 +104,7 @@ Change any of it for another city: jurisdiction, code section, the rule in plain
 3. On **Report**, choose a dog or a neighbor's address and a date range. Options: only incidents meeting your criteria, and only barks you've personally confirmed (leaving out automatic voice matches).
 4. **Print or save as PDF** for a signed log, **Download CSV** for a spreadsheet (one clean table, opens directly in Excel or Sheets), **Daily totals CSV**, or **Clips and CSV (.zip)** with every incident's audio named by incident number.
 
-The printed report includes: who and what the complaint is about, the period, your contact details (entered once on the Ordinance page), the ordinance text and source, a summary, the criteria with counts, daily totals, a numbered incident log (start, end, length, barks, whether a person confirmed the dog, criteria met, your notes), how the recording was made, where to report, and a signature line.
+The printed report includes: who and what the complaint is about, the period, your contact details (entered once on Settings), the ordinance text and source, a summary, the criteria with counts, daily totals, a numbered incident log (start, end, length, barks, whether a person confirmed the dog, criteria met, your notes), how the recording was made, where to report, and a signature line.
 
 ## How detection works
 
@@ -126,7 +147,7 @@ python -m barktracker demo                 # two weeks of synthetic barking to t
 
 ## API
 
-The dashboard uses a small JSON API, documented at `/api/docs`. Useful bits: `/api/status`, `/api/summary?days=14`, `/api/episodes`, `/api/episodes/{id}/audio`, `/api/report?dog=1&from=2026-10-01&to=2026-10-31`, `/api/report.csv` (same parameters, plus `kind=daily`), `/api/report/clips.zip`, `/api/ordinance`.
+The dashboard uses a small JSON API, documented at `/api/docs`. Useful bits: `/api/status`, `/api/summary?days=14`, `/api/episodes`, `/api/episodes/{id}/audio`, `/api/report?dog=1&from=2026-10-01&to=2026-10-31`, `/api/report.csv` (same parameters, plus `kind=daily`), `/api/report/clips.zip`, `/api/ordinance`, `/api/settings`, `/api/live`, `/api/media`.
 
 ## Development
 

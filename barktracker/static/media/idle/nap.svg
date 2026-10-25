@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+<style>
+.breathe{transform-box:fill-box;transform-origin:50% 100%;animation:b 3.6s ease-in-out infinite}
+@keyframes b{50%{transform:scaleY(1.035)}}
+.z{font:700 22px sans-serif;fill:#6b7f8a;opacity:0;animation:z 4.5s linear infinite}
+.z2{animation-delay:1.5s;font-size:28px}.z3{animation-delay:3s;font-size:18px}
+@keyframes z{0%{opacity:0;transform:translate(0,0)}20%{opacity:.9}100%{opacity:0;transform:translate(26px,-60px)}}
+@media (prefers-reduced-motion:reduce){.breathe,.z{animation:none}.z{opacity:.7}}
+</style>
+<rect width="400" height="300" fill="#e4ecee"/>
+<ellipse cx="200" cy="246" rx="160" ry="24" fill="#c9d6da"/>
+<g class="breathe">
+  <path d="M95 236 C70 230 62 205 82 196 C96 190 108 204 104 214" fill="none" stroke="#c98f55" stroke-width="16" stroke-linecap="round"/>
+  <ellipse cx="185" cy="207" rx="98" ry="44" fill="#d9a066"/>
+  <ellipse cx="190" cy="228" rx="70" ry="16" fill="#f1d3a8"/>
+  <ellipse cx="262" cy="240" rx="34" ry="10" fill="#c98f55"/>
+</g>
+<circle cx="283" cy="208" r="33" fill="#d9a066"/>
+<ellipse cx="312" cy="221" rx="25" ry="14" fill="#e6b47c"/>
+<circle cx="333" cy="216" r="6" fill="#2a2a2a"/>
+<path d="M281 206 q9 6 18 0" fill="none" stroke="#2a2a2a" stroke-width="3" stroke-linecap="round"/>
+<path d="M262 186 C250 192 248 222 262 232 C270 222 272 198 268 186 Z" fill="#8a5a33"/>
+<text class="z" x="318" y="178">z</text><text class="z z2" x="330" y="160">z</text><text class="z z3" x="342" y="146">z</text>
+</svg>
