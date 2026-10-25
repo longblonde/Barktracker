@@ -290,12 +290,14 @@ audio { width: 100%; margin-top: 12px; }
   position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .35s;
 }
 .beat-media > .on { opacity: 1; }
+.beat-media > .snap { transition: none; }
 .beat-info { min-width: 0; }
 .beat-title { margin: 0 0 4px; font-size: 14px; color: var(--muted); }
 .beat-title strong { font: 600 22px/1.2 var(--display); color: var(--ink); margin-right: 8px; letter-spacing: -0.01em; }
 .beat[data-state="barking"] .beat-title strong { color: var(--bark); }
 .beat[data-state="error"] .beat-title strong { color: var(--danger); }
-.beat-trace { display: block; width: 100%; height: 56px; }
+.beat-info { display: grid; gap: 6px; }
+.beat-eq { display: block; width: 100%; height: 76px; }
 .splash { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .splash-word {
   position: absolute; font: 800 var(--fs)/1 var(--display); color: var(--bark); white-space: nowrap;
@@ -320,7 +322,7 @@ audio { width: 100%; margin-top: 12px; }
   .beat { gap: 12px; padding: 10px 16px; }
   .beat-frame { width: 116px; }
   .beat-title strong { font-size: 18px; display: block; }
-  .beat-trace { height: 40px; }
+  .beat-eq { height: 56px; }
 }
 @media print { .beat { display: none !important; } }
 
@@ -331,7 +333,7 @@ body.kiosk .beat-frame { width: auto; height: 100%; max-width: 100%; justify-sel
 body.kiosk .beat-info { max-width: 900px; width: 100%; justify-self: center; text-align: center; }
 body.kiosk .beat-title { font-size: 20px; }
 body.kiosk .beat-title strong { font-size: 44px; display: block; margin: 0 0 4px; }
-body.kiosk .beat-trace { height: 80px; }
+body.kiosk .beat-eq { height: 220px; }
 body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width: none; margin: 0; z-index: 5; }
 .kiosk-exit { opacity: .6; text-decoration: none; }
 .kiosk-exit:hover, .kiosk-exit:focus-visible { opacity: 1; }
@@ -356,6 +358,8 @@ body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width
 .diskbar .other { background: var(--unknown); }
 .capline { display: grid; gap: 4px; font-size: 14px; }
 .meter.wide { max-width: none; height: 8px; }
+.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+@media (max-width: 760px) { .three { grid-template-columns: 1fr; } }
 .piccol { display: grid; gap: 8px; align-content: start; }
 .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
 .thumb { margin: 0; }

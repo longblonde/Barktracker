@@ -709,16 +709,20 @@ function drawPictures(m) {
   const col = (kind, title, help) => {
     const items = m[kind], own = items.some((i) => i.own);
     return `<div class="piccol">
-      <h3>${title}</h3><p class="small muted intro">${help}${own ? "" : " Showing the built-in drawings until you add your own."}</p>
+      <h3>${title}</h3><p class="small muted intro">${help}${own ? "" : " Using the built-in drawing until you add your own."}</p>
       <div class="thumbs">${items.map((i) => `<figure class="thumb">${i.video ? `<video src="${i.url}" muted loop autoplay playsinline></video>` : `<img src="${i.url}" alt="">`}
-        <figcaption>${esc(i.name)}${i.own ? ` <button type="button" class="linkbtn" data-delpic="${kind}/${esc(i.name)}" aria-label="Remove ${esc(i.name)}">Remove</button>` : ""}</figcaption></figure>`).join("")}</div>
+        <figcaption>${esc(i.name)}${i.own ? ` <button type="button" class="linkbtn" data-delpic="${i.folder}/${esc(i.name)}" aria-label="Remove ${esc(i.name)}">Remove</button>` : ""}</figcaption></figure>`).join("")}</div>
       <label class="btn upload">Add pictures<input type="file" accept="image/*,video/mp4,video/webm" multiple data-up="${kind}" hidden></label>
     </div>`;
   };
   $("#sec-pictures").innerHTML = `<div class="panel form">
     <h2>Heartbeat pictures</h2>
-    <p class="small muted intro">The band at the top of every page shows a random calm picture while it's quiet and a random barking one while a dog is barking. Photos, GIFs, SVGs and short MP4 or WebM loops all work. You can also copy files straight into <code>${esc(m.folder)}/idle</code> and <code>/bark</code> on the Pi.</p>
-    <div class="two">${col("idle", "Calm", "Shown while it's quiet.")}${col("bark", "Barking", "Shown while a bark is being detected.")}</div>
+    <p class="small muted intro">The band at the top of every page shows one of three pictures. Photos, GIFs, SVGs and short MP4 or WebM loops all work; if a folder has several, one is picked at random. You can also copy files straight into <code>${esc(m.folder)}/quiet</code>, <code>/active</code> and <code>/bark</code> on the Pi.</p>
+    <div class="three">
+      ${col("quiet", "Napping", "Quiet hours, when it's calm.")}
+      ${col("active", "Sitting", "Daytime, or noise without barking.")}
+      ${col("bark", "Barking", "While a bark is being detected.")}
+    </div>
   </div>`;
   $("#sec-pictures").querySelectorAll("[data-up]").forEach((inp) => inp.addEventListener("change", async () => {
     let r = m;
@@ -908,30 +912,31 @@ function renderSystemLive() {
 }
 
 // -------------------------------------------------------------- heartbeat
-// The band at the top of every page: a random calm picture while it's quiet, a random
-// barking picture while a bark is being detected, a heartbeat trace, and BARK splashes.
+// The band at the top of every page. One picture per mode (nap: quiet hours and calm,
+// sit: daytime or noisy without barking, bark: bark detected), a live EQ of the mic with
+// falling bars and peak caps (monotone normally, full color while barking), and BARK splashes.
 const Beat = (() => {
   const band = $("#beat"), mediaEl = $("#beatMedia"), splash = $("#splash");
-  const title = $("#beatTitle"), sub = $("#beatSub"), canvas = $("#beatTrace");
+  const title = $("#beatTitle"), sub = $("#beatSub"), canvas = $("#beatEq");
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
-  let media = { idle: [], bark: [] }, state = "connecting", shown = { idle: null, bark: null }, lastBarks = null;
-  let idleSince = Date.now(), failures = 0, prevState = "connecting";
+  const KIND = { nap: "quiet", sit: "active", bark: "bark" };
+  let media = { quiet: [], active: [], bark: [] }, shown = {}, lastBarks = null, prevState = "connecting";
+  let live = { state: "connecting", mode: "nap", bands: [] }, failures = 0, es = null, pollTimer = null;
   const WORDS = ["BARK", "BARK!", "Bark!", "BARK!!", "bark", "BARK"];
 
+  // ---- pictures
   async function loadMedia() {
     try { media = await api("/api/media"); } catch (_) { return; }
-    shown = { idle: null, bark: null };
-    show(state === "barking" ? "bark" : "idle", true);
+    shown = {}; mediaEl.dataset.kind = ""; show(KIND[live.mode] || "quiet");
   }
   function pick(kind) {
     const list = media[kind] || [];
-    if (!list.length) return null;
-    if (list.length === 1) return list[0];
+    if (list.length < 2) return list[0] || null;
     let item; do { item = list[Math.floor(Math.random() * list.length)]; } while (item.url === shown[kind]?.url);
     return item;
   }
-  function show(kind, force = false) {
-    if (!force && mediaEl.dataset.kind === kind) return;
+  function show(kind) {
+    if (mediaEl.dataset.kind === kind) return;
     const item = pick(kind); if (!item) return;
     shown[kind] = item; mediaEl.dataset.kind = kind;
     const el = document.createElement(item.video ? "video" : "img");
@@ -939,12 +944,18 @@ const Beat = (() => {
     else el.alt = "";
     el.src = item.url;
     const old = [...mediaEl.children];
-    const reveal = () => { requestAnimationFrame(() => el.classList.add("on")); setTimeout(() => old.forEach((o) => o.remove()), 400); };
+    const snap = kind === "bark";                     // barking cuts in instantly; calm fades back
+    if (snap) el.classList.add("snap");
+    const reveal = () => {
+      if (snap) { el.classList.add("on"); old.forEach((o) => o.remove()); return; }
+      requestAnimationFrame(() => el.classList.add("on")); setTimeout(() => old.forEach((o) => o.remove()), 400);
+    };
     el.addEventListener(item.video ? "loadeddata" : "load", reveal, { once: true });
     el.addEventListener("error", reveal, { once: true });
     mediaEl.appendChild(el);
   }
 
+  // ---- BARK splashes
   function spawn(n) {
     const count = Math.min(5, Math.max(1, n)) + (Math.random() < 0.5 ? 1 : 0);
     const big = document.body.classList.contains("kiosk") ? 2.6 : 1;
@@ -962,100 +973,121 @@ const Beat = (() => {
     }
   }
 
-  function setState(next, info = {}) {
-    const prev = state; state = next;
-    band.dataset.state = next;
-    if (next === "barking") {
-      title.textContent = "Barking";
-      sub.textContent = info.episode_barks ? `${info.episode_barks} bark${info.episode_barks === 1 ? "" : "s"} so far` : "just now";
+  // ---- state from the server
+  function apply(l) {
+    failures = 0; live = l;
+    const room = l.level_db != null ? `room at ${Math.round(l.level_db)} dB` : "";
+    if (l.error && l.state !== "barking") {
+      band.dataset.state = "error"; title.textContent = "Microphone problem"; sub.textContent = l.error; show("quiet");
+    } else if (l.state === "off") {
+      band.dataset.state = "off"; title.textContent = "Not listening"; sub.textContent = "Started without a microphone"; show("quiet");
+    } else if (l.mode === "bark") {
+      band.dataset.state = "barking"; title.textContent = "Barking";
+      sub.textContent = l.episode_barks ? `${l.episode_barks} bark${l.episode_barks === 1 ? "" : "s"} so far` : "just now";
       show("bark");
-    } else if (next === "idle") {
-      title.textContent = "Quiet";
-      sub.textContent = info.level_db != null ? `Listening, room at ${Math.round(info.level_db)} dB` : "Listening";
-      if (prev !== "idle") { idleSince = Date.now(); show("idle"); }
-      else if (Date.now() - idleSince > 90000) { idleSince = Date.now(); show("idle", true); }
-    } else if (next === "off") {
-      title.textContent = "Not listening"; sub.textContent = "Started without a microphone"; show("idle");
+    } else if (l.mode === "sit") {
+      band.dataset.state = "awake"; title.textContent = l.noisy ? "Noisy" : "Listening";
+      sub.textContent = l.noisy ? `Sound but no barking, ${room}` : `Daytime, ${room}`;
+      show("active");
     } else {
-      title.textContent = info.title || "Can't reach the Pi"; sub.textContent = info.sub || "Retrying…"; show("idle");
+      band.dataset.state = "idle"; title.textContent = "Quiet";
+      sub.textContent = l.quiet_hours ? `Quiet hours, ${room}` : room;
+      show("quiet");
     }
+    const started = l.state === "barking" && prevState !== "barking";
+    if (lastBarks !== null && l.barks > lastBarks) spawn(l.barks - lastBarks + (started ? 2 : 0));
+    else if (started) spawn(3);
+    lastBarks = l.barks; prevState = l.state;
   }
-
-  async function poll() {
+  function lost() {
+    if (++failures < 3) return;
+    live = { ...live, state: "error", bands: [] };
+    band.dataset.state = "error"; title.textContent = "Can't reach the Pi"; sub.textContent = "Retrying…";
+  }
+  function connect() {
     if (document.hidden) return;
-    try {
-      const l = await api("/api/live");
-      failures = 0;
-      if (l.error && l.state !== "barking") setState("error", { title: "Microphone problem", sub: l.error });
-      else setState(l.state, l);
-      const started = state === "barking" && prevState !== "barking";
-      if (lastBarks !== null && l.barks > lastBarks) spawn(l.barks - lastBarks + (started ? 2 : 0));
-      else if (started) spawn(3);
-      prevState = state;
-      lastBarks = l.barks;
-    } catch (_) {
-      if (++failures >= 3) setState("error");
+    if ("EventSource" in window) {
+      es = new EventSource("/api/live/stream");
+      es.onmessage = (e) => { try { apply(JSON.parse(e.data)); } catch (_) { /* ignore a bad frame */ } };
+      es.onerror = () => { failures = Math.max(failures, 2); lost(); };
+    } else {
+      const poll = async () => { try { apply(await api("/api/live")); } catch (_) { lost(); } };
+      poll(); pollTimer = setInterval(poll, 500);
     }
   }
+  function disconnect() { es?.close(); es = null; clearInterval(pollTimer); pollTimer = null; }
 
-  // heartbeat trace: an ECG-style line; slow and calm when idle, fast and tall when barking
+  // ---- EQ: LED-segment bars with gravity and peak caps
   const ctx = canvas.getContext("2d");
-  let phase = 0, last = performance.now(), buf = [];
-  function beatShape(t) {          // t in [0,1) within one beat
-    if (t < 0.08) return 0.12 * Math.sin((t / 0.08) * Math.PI);
-    if (t < 0.12) return -0.18 * Math.sin(((t - 0.08) / 0.04) * Math.PI);
-    if (t < 0.18) return 1.0 * Math.sin(((t - 0.12) / 0.06) * Math.PI);
-    if (t < 0.24) return -0.32 * Math.sin(((t - 0.18) / 0.06) * Math.PI);
-    if (t < 0.42) return 0.22 * Math.sin(((t - 0.26) / 0.16) * Math.PI) * (t > 0.26 ? 1 : 0);
-    return 0;
+  let bars = [], last = performance.now();
+  const HOT = [[0, [35, 176, 33]], [0.38, [163, 207, 28]], [0.58, [242, 211, 15]], [0.76, [243, 154, 20]], [0.9, [240, 90, 29]], [1, [255, 32, 32]]];
+  function hot(t) {
+    let k = 0; while (k < HOT.length - 2 && t > HOT[k + 1][0]) k++;
+    const [a, ca] = HOT[k], [b, cb] = HOT[k + 1], u = Math.min(1, Math.max(0, (t - a) / (b - a)));
+    return ca.map((c, i) => Math.round(c + (cb[i] - c) * u));
+  }
+  function target(i, n) {
+    const src = live.bands || [];
+    if (!src.length || live.state === "off" || live.state === "error") return 0;
+    if (n > src.length) {                              // more bars than bands: interpolate
+      const pos = Math.max(0, Math.min(src.length - 1, ((i + 0.5) * src.length) / n - 0.5));
+      const k = Math.floor(pos), u = pos - k;
+      return src[k] * (1 - u) + (src[Math.min(src.length - 1, k + 1)] ?? 0) * u;
+    }
+    const a = Math.floor((i * src.length) / n), b = Math.max(a + 1, Math.floor(((i + 1) * src.length) / n));
+    let m = 0; for (let k = a; k < b; k++) m = Math.max(m, src[k]); return m;
   }
   function frame(now) {
     const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W || !H) { if (!reduce.matches) requestAnimationFrame(frame); return; }
     if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
       canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-      buf = Array.from({ length: Math.ceil(W) }, () => ({ v: 0, s: state }));   // full-width flat line
     }
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    const period = state === "barking" ? 0.42 : state === "idle" ? 1.15 : 0;
-    const amp = state === "barking" ? 1 : 0.55;
-    const speed = 90;                                // px per second
-    const steps = Math.max(1, Math.round(speed * dt));
-    for (let i = 0; i < steps; i++) {
-      let v = 0;
-      if (period) { phase = (phase + dt / steps / period) % 1; v = beatShape(phase) * amp; }
-      else v = (Math.random() - 0.5) * 0.03;
-      buf.push({ v, s: state });
-    }
-    if (buf.length > W) buf.splice(0, buf.length - W);
+    const n = W < 360 ? 14 : W < 640 ? 20 : W < 1100 ? 28 : 36;
+    if (bars.length !== n) bars = Array.from({ length: n }, () => ({ h: 0, peak: 0, hold: 0, v: 0 }));
+    const reflect = H > 120, area = reflect ? H * 0.74 : H;
+    const gapY = area > 120 ? 4 : 3, S = Math.max(5, Math.min(16, Math.floor(area / (area > 120 ? 13 : 11))));
+    const segH = (area - gapY * (S - 1)) / S, gapX = W > 600 ? 4 : 3, bw = (W - gapX * (n - 1)) / n;
+    const barking = live.mode === "bark" && live.state !== "error";
+    const css = getComputedStyle(band), ink = css.getPropertyValue("--ink").trim(), faint = css.getPropertyValue("--faint").trim();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    const css = getComputedStyle(band);
-    const color = (st) => css.getPropertyValue(st === "barking" ? "--bark" : st === "idle" ? "--ink" : "--unknown").trim();
-    const mid = H * 0.62, scale = H * 0.5, off = W - buf.length;
-    ctx.lineJoin = "round";
-    let i = 0;
-    while (i < buf.length) {                          // one stroke per stretch of the same state
-      const st = buf[i].s; let j = i;
-      ctx.beginPath(); ctx.strokeStyle = color(st); ctx.lineWidth = st === "barking" ? 2.2 : 1.6;
-      ctx.moveTo(off + i, mid - buf[i].v * scale);
-      while (j + 1 < buf.length && buf[j + 1].s === st) { j++; ctx.lineTo(off + j, mid - buf[j].v * scale); }
-      if (j + 1 < buf.length) ctx.lineTo(off + j + 1, mid - buf[j + 1].v * scale);
-      ctx.stroke(); i = j + 1;
-    }
-    if (buf.length) {                                  // leading dot
-      const lastPt = buf[buf.length - 1];
-      ctx.fillStyle = color(lastPt.s); ctx.beginPath();
-      ctx.arc(W - 1.5, mid - lastPt.v * scale, 3, 0, Math.PI * 2); ctx.fill();
-    }
+    bars.forEach((bar, i) => {
+      const t = target(i, n);
+      if (reduce.matches) { bar.h = t; bar.peak = 0; }
+      else {
+        bar.h = t > bar.h ? bar.h + (t - bar.h) * 0.7 : Math.max(t, bar.h - 1.3 * dt);
+        if (bar.h >= bar.peak) { bar.peak = bar.h; bar.hold = 0.45; bar.v = 0; }
+        else if (bar.hold > 0) bar.hold -= dt;
+        else { bar.v += 2.2 * dt; bar.peak = Math.max(bar.h, bar.peak - bar.v * dt); }
+      }
+      const lit = Math.round(bar.h * S), x = i * (bw + gapX);
+      const capIdx = bar.peak > 0.04 ? Math.min(S - 1, Math.max(lit, Math.floor(bar.peak * S))) : -1;
+      for (let j = 0; j < S; j++) {
+        const y = area - (j + 1) * segH - j * gapY, f = S > 1 ? j / (S - 1) : 1;
+        let color, alpha;
+        if (j === capIdx && !reduce.matches) { color = barking ? "rgb(255,32,32)" : ink; alpha = 1; }
+        else if (j < lit) { color = barking ? `rgb(${hot(f)})` : ink; alpha = barking ? 1 : 0.45 + 0.55 * f; }
+        else { color = barking ? `rgb(${hot(f)})` : faint; alpha = barking ? 0.13 : 1; }
+        ctx.globalAlpha = alpha; ctx.fillStyle = color;
+        ctx.fillRect(x, y, bw, segH);
+        if (reflect && (j < lit || j === capIdx)) {
+          const ry = area + gapY * 2 + j * (segH + gapY);
+          if (ry < H) { ctx.globalAlpha = alpha * 0.16 * (1 - j / S); ctx.fillRect(x, ry, bw, segH); }
+        }
+      }
+    });
+    ctx.globalAlpha = 1;
     if (!reduce.matches) requestAnimationFrame(frame);
   }
-  function drawStatic() { last = performance.now() - 1000; buf = []; for (let i = 0; i < 12; i++) frame(last + 100 * (i + 1)); }
 
   function start() {
-    loadMedia();
-    poll(); setInterval(poll, 600);
-    if (reduce.matches) { drawStatic(); setInterval(drawStatic, 1500); } else requestAnimationFrame(frame);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { last = performance.now(); poll(); } });
+    loadMedia(); connect();
+    if (reduce.matches) setInterval(() => frame(performance.now()), 250); else requestAnimationFrame(frame);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) disconnect(); else { last = performance.now(); connect(); }
+    });
   }
   return { start, loadMedia, spawn };
 })();

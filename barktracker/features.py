@@ -163,3 +163,35 @@ def spectrogram_image(x: np.ndarray, width: int = 900, height: int = 96,
     lo = hi - 70
     img = np.clip((rows - lo) / (hi - lo), 0, 1)
     return (img * 255).astype(np.uint8), len(x) / SR
+
+
+# ---- live EQ bands for the dashboard -------------------------------------------
+EQ_BANDS = 20
+_EQ_FFT = 800                        # one 50 ms frame at 16 kHz -> 20 Hz bins
+
+
+@lru_cache(maxsize=2)
+def _eq_edges(n_bands: int = EQ_BANDS, n_fft: int = _EQ_FFT) -> tuple[np.ndarray, np.ndarray]:
+    edges = np.geomspace(90.0, 7600.0, n_bands + 1)
+    bins = np.round(edges / (SR / n_fft)).astype(int)
+    lo = bins[:-1]
+    hi = np.maximum(bins[1:], lo + 1)
+    return lo, hi
+
+
+# full-scale sine through a Hann window peaks at (N/4)^2 power in one bin
+_EQ_REF_DB = 10 * np.log10((_EQ_FFT / 4) ** 2)
+
+
+def eq_bands(frame: np.ndarray, n_bands: int = EQ_BANDS) -> np.ndarray:
+    """Log-spaced band levels of one frame, 0..1 (per-band level, about -84 dB -> 0, -30 dB -> 1)."""
+    x = np.asarray(frame, dtype=np.float32)
+    if len(x) != _EQ_FFT:
+        x = np.resize(x, _EQ_FFT) if len(x) else np.zeros(_EQ_FFT, np.float32)
+    p = np.abs(np.fft.rfft(x * _window(_EQ_FFT))) ** 2
+    lo, hi = _eq_edges(n_bands)
+    csum = np.concatenate([[0.0], np.cumsum(p)])
+    peak = np.array([p[a:b].max() for a, b in zip(lo, hi)])
+    mean = (csum[hi] - csum[lo]) / (hi - lo)
+    db = 10 * np.log10(0.5 * peak + 0.5 * mean + 1e-12) - _EQ_REF_DB
+    return np.clip((db + 84.0) / 54.0, 0.0, 1.0).astype(np.float32)

@@ -32,7 +32,7 @@ if [[ ! -f config.yaml ]]; then
   [[ -n "$TZ_NAME" ]] && sed -i "s|^timezone: null.*|timezone: $TZ_NAME|" config.yaml
   echo "==> Created config.yaml"
 fi
-mkdir -p data/media/idle data/media/bark   # drop your own calm / barking pictures here
+mkdir -p data/media/quiet data/media/active data/media/bark   # your own nap / sit / bark pictures
 sudo usermod -aG audio "$USER_NAME" || true
 
 echo "==> systemd service"

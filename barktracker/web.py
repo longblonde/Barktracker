@@ -1,8 +1,10 @@
 """FastAPI dashboard + JSON API."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
+import json
 import io
 import secrets
 import shutil
@@ -14,7 +16,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -22,6 +24,7 @@ from pydantic import BaseModel
 from . import features as F
 from . import ordinance as O
 from . import settings as S
+from .live import LiveMode
 from .app import BarkApp
 from .audio import read_wav
 from .storage import NOT_BARK
@@ -30,6 +33,7 @@ STATIC = Path(__file__).parent / "static"
 MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
                ".webp": "image/webp", ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm"}
 VIDEO = {".mp4", ".webm"}
+MEDIA_KINDS = ("quiet", "active", "bark")   # nap / sit / bark pictures
 
 
 class DogIn(BaseModel):
@@ -410,40 +414,52 @@ def create_app(bark: BarkApp) -> FastAPI:
         return get_settings()
 
     # ---- heartbeat: live state + idle/bark pictures -------------------------------
+    livemode = LiveMode(cfg, store)
+
     @app.get("/api/live")
     def live():
-        d = bark.detector
-        if d is None:
-            return {"state": "off", "barks": 0, "level_db": None}
-        ep = d.ep
-        recent = (time.time() - d.last_bark_wall) < 2.5 if d.last_bark_wall else False
-        return {"state": "barking" if (ep is not None or recent) else "idle",
-                "barks": d.stats.get("barks", 0), "episode_barks": ep.barks if ep else 0,
-                "level_db": round(d.prev_level, 1), "floor_db": round(d.floor or -90, 1),
-                "error": bark.error}
+        return livemode.snapshot(bark.detector, bark.error)
+
+    @app.get("/api/live/stream")
+    async def live_stream(request: Request, count: int = 0):
+        """Server-sent events, 20 per second: picture mode, bark state and EQ bands.
+        count > 0 ends the stream after that many events (for scripts and tests)."""
+        async def gen():
+            yield "retry: 2000\n\n"
+            sent = 0
+            while not await request.is_disconnected() and (count <= 0 or sent < count):
+                sent += 1
+                yield f"data: {json.dumps(livemode.snapshot(bark.detector, bark.error), separators=(',', ':'))}\n\n"
+                await asyncio.sleep(0.05)
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     def media_dir(kind: str) -> Path:
-        if kind not in ("idle", "bark"):
+        if kind not in MEDIA_KINDS:
             raise HTTPException(404)
         return cfg.media_path / kind
 
     def list_media(kind: str) -> list[dict]:
-        own = [p for p in sorted(media_dir(kind).glob("*")) if p.suffix.lower() in MEDIA_TYPES and p.is_file()]
+        def own_files(k):
+            d = cfg.media_path / k
+            return [p for p in sorted(d.glob("*")) if p.suffix.lower() in MEDIA_TYPES and p.is_file()] if d.exists() else []
+        own = own_files(kind) + (own_files("idle") if kind == "quiet" else [])   # older installs used idle/
         if own:
-            return [{"url": f"/media/{kind}/{p.name}", "name": p.name, "own": True,
+            return [{"url": f"/media/{p.parent.name}/{p.name}", "name": p.name, "own": True, "folder": p.parent.name,
                      "video": p.suffix.lower() in VIDEO} for p in own]
         builtin = sorted((STATIC / "media" / kind).glob("*"))
-        return [{"url": f"/static/media/{kind}/{p.name}", "name": p.name, "own": False,
+        return [{"url": f"/static/media/{kind}/{p.name}", "name": p.name, "own": False, "folder": kind,
                  "video": p.suffix.lower() in VIDEO} for p in builtin if p.suffix.lower() in MEDIA_TYPES]
 
     @app.get("/api/media")
     def media():
-        return {"idle": list_media("idle"), "bark": list_media("bark"), "folder": str(cfg.media_path)}
+        return {**{k: list_media(k) for k in ("quiet", "active", "bark")}, "folder": str(cfg.media_path)}
 
     @app.get("/media/{kind}/{name}")
     def media_file(kind: str, name: str):
-        p = (media_dir(kind) / name).resolve()
-        if p.parent != media_dir(kind).resolve() or not p.is_file() or p.suffix.lower() not in MEDIA_TYPES:
+        base = (cfg.media_path / "idle") if kind == "idle" else media_dir(kind)
+        p = (base / name).resolve()
+        if p.parent != base.resolve() or not p.is_file() or p.suffix.lower() not in MEDIA_TYPES:
             raise HTTPException(404)
         return FileResponse(p, media_type=MEDIA_TYPES[p.suffix.lower()])
 
@@ -462,8 +478,9 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     @app.delete("/api/media/{kind}/{name}")
     def delete_media(kind: str, name: str):
-        p = (media_dir(kind) / name).resolve()
-        if p.parent != media_dir(kind).resolve() or not p.is_file():
+        base = (cfg.media_path / "idle") if kind == "idle" else media_dir(kind)
+        p = (base / name).resolve()
+        if p.parent != base.resolve() or not p.is_file():
             raise HTTPException(404)
         p.unlink()
         return media()

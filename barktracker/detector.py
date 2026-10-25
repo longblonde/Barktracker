@@ -75,6 +75,7 @@ class BarkDetector:
         self.lock = threading.Lock()
         self.stats = collections.Counter()
         self.history: collections.deque = collections.deque(maxlen=200)   # (ts, level, floor)
+        self.eq = np.zeros(F.EQ_BANDS, np.float32)
         self.last_prob = 0.0
         self.last_detail: dict = {}
         self.last_classify_ms = 0.0
@@ -112,6 +113,8 @@ class BarkDetector:
     def _frame(self, frame: np.ndarray) -> None:
         idx = self.n
         level = F.dbfs(frame)
+        # live EQ for the dashboard: instant rise, quick decay so 20 Hz readers don't miss peaks
+        self.eq = np.maximum(F.eq_bands(frame), self.eq * 0.55)
         self.ring.append((idx, frame))
         self.levels.append((idx, level))
         self.n += FRAME
