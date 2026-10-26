@@ -69,6 +69,12 @@ class BarkApp:
         self.notify(info)
 
     def queue_unrefined(self, limit: int = 2000) -> int:
+        from .refine import REFINE_VERSION
+        if self.store.get_meta("refine_version", 0) != REFINE_VERSION:
+            # the re-scan logic improved since these clips were done: redo them once (labels are kept)
+            with self.store.tx() as c:
+                c.execute("UPDATE episodes SET refined=0 WHERE clip_path IS NOT NULL")
+            self.store.set_meta("refine_version", REFINE_VERSION)
         rows = self.store.q("SELECT id FROM episodes WHERE refined=0 AND clip_seconds IS NOT NULL"
                             " AND clip_path IS NOT NULL ORDER BY start_ts DESC LIMIT ?", (limit,))
         for r in rows:

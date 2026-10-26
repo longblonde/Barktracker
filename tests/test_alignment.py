@@ -157,3 +157,20 @@ def test_refine_merges_quiet_tail_into_the_bark(tmp_path):
     refine_episode(store, eid, HeuristicClassifier(), None, 0.35)
     got = [round(b["ts"] - T0, 2) for b in store.barks_for(eid)]
     assert len(got) == 2 and abs(got[0] - 2.0) < 0.05 and abs(got[1] - 3.4) < 0.05
+
+
+def test_improved_refine_redoes_saved_clips_once(tmp_path):
+    from barktracker.app import BarkApp
+    from barktracker.refine import REFINE_VERSION
+    cfg = Config(data_dir=str(tmp_path))
+    store = run(cfg, noisy_scene([2.0, 3.1]))
+    with store.tx() as c:
+        c.execute("UPDATE episodes SET refined=1")
+    store.set_meta("refine_version", REFINE_VERSION - 1)
+    app = BarkApp(cfg, None, start_detector=False)
+    assert app.queue_unrefined() == 1                 # older logic: queued again
+    assert app.store.get_meta("refine_version") == REFINE_VERSION
+    with app.store.tx() as c:
+        c.execute("UPDATE episodes SET refined=1")
+    assert app.queue_unrefined() == 0                 # current logic: not redone again
+    app.shutdown()

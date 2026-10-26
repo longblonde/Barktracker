@@ -23,6 +23,7 @@ from .storage import NOT_BARK, Store
 
 log = logging.getLogger(__name__)
 
+REFINE_VERSION = 2                  # bump when this logic changes: the Pi re-scans saved clips once
 OFFSETS = (0.05, 0.15, 0.25, 0.4)   # where the attack sits in the ~1 s model window; best one wins
 MIN_RISE_DB = 12.0                  # a strong attack, well above the room...
 MIN_DOGNESS = 0.15                  # ...that sounds like a dog counts, inside a confirmed episode
