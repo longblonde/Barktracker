@@ -122,12 +122,12 @@ def cmd_demo(args, cfg):
     store = bark.store
     names = list(synth.DOG_VOICES)
     existing = {d["name"]: d["id"] for d in store.dogs()}
-    homes = {"Big dog": ("J. Smith", "123 Elm St", "Black lab, large"),
-             "Small dog": ("R. Lee", "9 Oak Ave", "White terrier mix")}
+    homes = {"Big dog": ("J. Smith", "123 Elm St", "Black lab", "large"),
+             "Small dog": ("R. Lee", "9 Oak Ave", "White terrier mix", "small")}
     ids = {}
     for n in names:
-        o, addr, desc = homes.get(n, ("", "", ""))
-        ids[n] = existing.get(n) or store.add_dog(n, owner=o, address=addr, description=desc)["id"]
+        o, addr, desc, size = homes.get(n, ("", "", "", ""))
+        ids[n] = existing.get(n) or store.add_dog(n, owner=o, address=addr, description=desc, size=size)["id"]
     det = BarkDetector(cfg, HeuristicClassifier(), store, None)
     rng = np.random.default_rng(args.seed)
     now = datetime.now().replace(second=0, microsecond=0)

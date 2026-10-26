@@ -66,12 +66,13 @@ function dominant(dogs) {
 }
 function dogTags(dogs) {
   const e = Object.entries(dogs || {}).sort((a, b) => b[1] - a[1]);
-  if (!e.length) return `<span class="tag">No barks left</span>`;
+  if (!e.length) return `<span class="tag">No dog</span>`;
   return e.map(([k, n]) => `<span class="tag" style="--c:${dogColor(k)}"><i></i>${esc(dogName(k))} ×${n}</span>`).join("");
 }
 async function loadDogs() {
   const r = await api("/api/dogs");
   S.dogs = Object.fromEntries(r.dogs.map((d) => [String(d.id), d]));
+  S.minLabels = r.min_labels;
   return r;
 }
 
@@ -287,9 +288,9 @@ function episodeList(items, emptyTitle, emptyText) {
       ${e.has_clip ? playBtn(e.id) : `<span></span>`}
       <span class="when">${fmtTime(e.start_ts)}<span class="day">${fmtDay(e.start_ts)}</span></span>
       <span class="dur">${fmtDur(e.duration)}</span>
-      <span class="n">${e.bark_count} bark${e.bark_count === 1 ? "" : "s"}</span>
+      <span class="n">${e.bark_count} ${e.false_positive ? "sound" : "bark"}${e.bark_count === 1 ? "" : "s"}</span>
       <span class="dogs">${dogTags(e.dogs)}</span>
-      <span class="state ${e.reviewed ? "" : "new"}">${e.live ? "Recording" : e.reviewed ? "Reviewed" : "New"}</span>
+      <span class="state ${e.reviewed || e.false_positive ? "" : "new"}">${e.live ? "Recording" : e.false_positive ? (e.has_clip ? "Not a bark" : "Not a bark, audio deleted") : e.reviewed ? "Reviewed" : "New"}</span>
     </a>`).join("")}</div>`;
 }
 
@@ -297,29 +298,47 @@ function episodeList(items, emptyTitle, emptyText) {
 async function renderClips() {
   await loadDogs();
   const f = S.clipFilters;
-  const qs = new URLSearchParams({ limit: 30, offset: f.offset });
+  f.kind = f.kind || "barking";
+  const qs = new URLSearchParams({ limit: 30, offset: f.offset, kind: f.kind });
   if (f.dog) qs.set("dog", f.dog);
   if (f.unreviewed) qs.set("unreviewed", "true");
   if (f.min) qs.set("min_duration", f.min);
-  const r = await api(`/api/episodes?${qs}`);
+  const [r, nb] = await Promise.all([api(`/api/episodes?${qs}`), api("/api/not-bark")]);
   if (route.name !== "clips") return;
+  const notBark = f.kind === "not_bark";
   const opts = Object.values(S.dogs).map((d) => `<option value="${d.id}" ${f.dog == d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("");
   view.innerHTML = `
     <section>
       <h1 style="margin-bottom:16px">Clips</h1>
-      <div class="filters">
+      <div class="tabs" role="tablist">
+        <button role="tab" class="tab" data-kind="barking" aria-selected="${!notBark}">Barking</button>
+        <button role="tab" class="tab" data-kind="not_bark" aria-selected="${notBark}">Not a bark <span class="count">${nb.episodes}</span></button>
+      </div>
+      ${notBark ? `<div class="panel nbinfo">
+        <p style="margin:0">These clips were marked “Not a bark”. They're left out of stats and reports${nb.filter_active ? ", and the Pi uses them to ignore similar sounds" : ". After a few, the Pi starts ignoring similar sounds"}.${nb.sounds_inside_barking_clips ? ` ${nb.sounds_inside_barking_clips} more single sound${nb.sounds_inside_barking_clips === 1 ? " was" : "s were"} marked inside barking clips.` : ""}</p>
+        <p class="small muted" style="margin:6px 0 0">Deleting only the audio frees disk space and keeps what was learned. “Delete and forget” on a clip also removes it from the filter.</p>
+        ${nb.with_audio ? `<div class="row" style="margin-top:10px"><button class="btn" id="nbBulk">Delete audio of all ${nb.with_audio} (${nb.audio_mb} MB), keep what was learned</button></div>` : ""}
+      </div>` : ""}
+      <div class="filters" ${notBark ? 'hidden' : ""}>
         <select id="fDog" aria-label="Filter by dog"><option value="">All dogs</option>${opts}<option value="u" ${f.dog === "u" ? "selected" : ""}>Unidentified</option></select>
         <label class="row" style="gap:6px"><input type="checkbox" id="fNew" ${f.unreviewed ? "checked" : ""}> Not yet reviewed</label>
         <label class="row" style="gap:6px">At least <input type="number" id="fMin" min="0" step="5" value="${f.min || 0}" style="width:5em"> seconds</label>
         <span class="muted small" style="margin-left:auto">${r.total} clip${r.total === 1 ? "" : "s"}</span>
       </div>
-      ${episodeList(r.items, "No clips match", "Try clearing a filter.")}
+      ${notBark ? episodeList(r.items, "Nothing marked “Not a bark”", "On a clip, choose “Not a bark” for sounds that aren't a dog: they show up here.")
+                : episodeList(r.items, "No clips match", "Try clearing a filter.")}
       <div class="pager">
         <button class="btn" id="pPrev" ${f.offset === 0 ? "disabled" : ""}>Newer</button>
         <span class="small muted">${r.total ? `${f.offset + 1}–${Math.min(f.offset + 30, r.total)}` : ""}</span>
         <button class="btn" id="pNext" ${f.offset + 30 >= r.total ? "disabled" : ""}>Older</button>
       </div>
     </section>`;
+  view.querySelectorAll("[data-kind]").forEach((b) => b.onclick = () => { f.kind = b.dataset.kind; f.offset = 0; renderClips(); });
+  const bulk = $("#nbBulk");
+  if (bulk) bulk.onclick = async () => {
+    const res = await api("/api/not-bark/delete-audio", { method: "POST" });
+    toast(`Deleted audio of ${res.deleted} clip${res.deleted === 1 ? "" : "s"}, freed ${res.freed_mb} MB`); renderClips();
+  };
   $("#fDog").onchange = (e) => { f.dog = e.target.value; f.offset = 0; renderClips(); };
   $("#fNew").onchange = (e) => { f.unreviewed = e.target.checked; f.offset = 0; renderClips(); };
   $("#fMin").onchange = (e) => { f.min = Number(e.target.value) || 0; f.offset = 0; renderClips(); };
@@ -357,17 +376,24 @@ async function renderClip() {
       </div>
       <h1>${fmtDay(ep.start_ts)}, ${fmtTimeS(ep.start_ts)}</h1>
       <dl class="facts">
-        <div><dt>Barking for</dt><dd>${fmtDur(ep.duration)}</dd></div>
-        <div><dt>Barks</dt><dd>${ep.bark_count}</dd></div>
+        <div><dt>${ep.false_positive ? "Lasted" : "Barking for"}</dt><dd>${fmtDur(ep.duration)}</dd></div>
+        <div><dt>${ep.false_positive ? "Sounds" : "Barks"}</dt><dd>${ep.bark_count}</dd></div>
         <div><dt>Loudest</dt><dd>${ep.peak_db != null ? ep.peak_db.toFixed(0) + " dBFS" : "–"}</dd></div>
         <div><dt>Detector confidence</dt><dd>${ep.max_prob != null ? Math.round(ep.max_prob * 100) + "%" : "–"}</dd></div>
       </dl>
       ${ep.live ? `<div class="notice">Still recording. Refresh when the barking stops to hear the full clip.</div>` : ""}
+      ${ep.false_positive ? `<div class="notice nb">
+        <p style="margin:0 0 8px"><strong>Marked “Not a bark”.</strong> It's left out of stats and reports, and its sounds teach the Pi to ignore similar ones.</p>
+        <div class="row">
+          <button class="btn" id="nbRestore">Restore as barking</button>
+          ${ep.has_clip ? `<button class="btn" id="nbAudio">Delete audio, keep what it learned</button>` : ""}
+          <button class="btn danger" id="nbForget">Delete and forget</button>
+        </div></div>` : ""}
       ${ep.has_clip ? `
         <div class="spec-wrap" id="spec"><canvas id="specCanvas" width="900" height="80"></canvas><div class="spec-marks" id="marks"></div><div class="playhead" id="ph" style="left:0"></div></div>
         <div class="spec-time"><span>0 s</span><span>Select a bark to hear it on its own and label it. Shift-select to pick several.</span><span>${clipLen.toFixed(1)} s</span></div>
         <audio id="aud" controls preload="auto" src="/api/episodes/${id}/audio"></audio>`
-        : `<div class="notice">The audio for this episode was removed by the retention policy. The log entry is kept.</div>`}
+        : `<div class="notice">${ep.false_positive ? "The audio was deleted. The sounds are still used to recognize this false alarm." : "The audio for this episode was removed by the retention policy. The log entry is kept."}</div>`}
     </section>
     <section class="panel labeler" id="labeler"></section>
     <section class="panel">
@@ -375,18 +401,35 @@ async function renderClip() {
       <textarea id="note" rows="2" style="width:100%" placeholder="Mail carrier, squirrel, doorbell…">${esc(ep.note)}</textarea>
       <div class="row spread" style="margin-top:10px">
         <button class="btn" id="saveNote">Save note</button>
-        <button class="btn danger" id="delEp">Delete episode</button>
+        ${ep.false_positive ? "" : `<button class="btn danger" id="delEp">Delete episode</button>`}
       </div>
     </section>`;
 
   $("#prevEp").onclick = () => (location.hash = `#/clip/${ep.prev_id}`);
   $("#nextEp").onclick = () => (location.hash = `#/clip/${ep.next_id}`);
   $("#saveNote").onclick = async () => { await api(`/api/episodes/${id}`, { method: "PATCH", body: { note: $("#note").value } }); toast("Note saved"); };
-  $("#delEp").onclick = async () => {
+  const de = $("#delEp");
+  if (de) de.onclick = async () => {
     if (!confirm("Delete this episode and its clip? This can't be undone.")) return;
     await api(`/api/episodes/${id}`, { method: "DELETE" }); toast("Episode deleted");
     location.hash = ep.next_id ? `#/clip/${ep.next_id}` : "#/clips";
   };
+  if (ep.false_positive) {
+    $("#nbRestore").onclick = async () => {
+      await api(`/api/episodes/${id}/label`, { method: "POST", body: { dog_id: null } });
+      toast("Restored as barking"); renderClip();
+    };
+    const na = $("#nbAudio");
+    if (na) na.onclick = async () => {
+      await api(`/api/episodes/${id}?keep_training=true`, { method: "DELETE" });
+      toast("Audio deleted. The filter still remembers this sound."); renderClip();
+    };
+    $("#nbForget").onclick = async () => {
+      if (!confirm("Delete this clip and stop using it to recognize false alarms? This can't be undone.")) return;
+      await api(`/api/episodes/${id}`, { method: "DELETE" });
+      toast("Deleted and forgotten"); S.clipFilters.kind = "not_bark"; location.hash = "#/clips";
+    };
+  }
 
   const aud = $("#aud");
   let stopAt = null;
@@ -435,10 +478,13 @@ async function renderClip() {
     const dogs = Object.values(S.dogs);
     const target = sel.size ? `${sel.size} selected bark${sel.size === 1 ? "" : "s"}` : "this clip";
     const current = sel.size ? null : (() => { const ids = new Set(ep.barks.map((b) => b.label_dog_id)); return ids.size === 1 ? [...ids][0] : undefined; })();
+    const snd = ep.sound;
+    const suggest = new Set(snd && !sel.size ? dogs.filter((d) => d.size === snd.sounds_like && d.labelled_barks < (S.minLabels || 3)).map((d) => d.id) : []);
     $("#labeler").innerHTML = `
       <h2>${sel.size ? `Who made ${target}?` : "Who's barking in this clip?"}</h2>
+      ${snd && !sel.size ? `<p class="small muted" style="margin:0">These barks sound ${SIZE_SOUND[snd.sounds_like]} (around ${fmtHz(snd.pitch_hz)}), like ${SIZE_WORD[snd.sounds_like]}.${suggest.size ? ` Suggested: ${[...suggest].map((id) => esc(S.dogs[id].name)).join(" or ")}. Tap to confirm.` : ""}</p>` : ""}
       <div class="row">
-        ${dogs.map((d) => `<button class="chip" data-label="${d.id}" style="--c:${d.color}" aria-pressed="${current === d.id}"><i></i>${esc(d.name)}</button>`).join("")}
+        ${dogs.map((d) => `<button class="chip ${suggest.has(d.id) ? "suggest" : ""}" data-label="${d.id}" style="--c:${d.color}" aria-pressed="${current === d.id}"><i></i>${esc(d.name)}${suggest.has(d.id) ? ` <span class="sugg">suggested</span>` : ""}</button>`).join("")}
         <button class="chip" data-label="0" style="--c:var(--danger)" aria-pressed="${current === 0}"><i></i>Not a bark</button>
         <button class="btn" data-label="clear">Clear labels</button>
         ${sel.size ? `<button class="btn" id="selNone">Use whole clip instead</button>` : ""}
@@ -485,6 +531,10 @@ async function renderDogs() {
             <input class="name" value="${esc(d.name)}" data-field="name" data-id="${d.id}" aria-label="Name">
             <div class="small muted">${d.labelled_barks} labelled, ${d.predicted_barks} matched automatically${d.address ? ` · ${esc(d.address)}` : ""}</div>
             <div class="meter" title="${Math.min(d.labelled_barks, need)} of ${need} labels needed to start matching"><b style="width:${Math.min(100, (100 * d.labelled_barks) / need)}%"></b></div>
+            <label class="sizepick">Size <select data-field="size" data-id="${d.id}">
+              ${[["", "Not sure"], ["small", "Small"], ["medium", "Medium"], ["large", "Large"]].map(([v, t]) => `<option value="${v}" ${(d.size || "") === v ? "selected" : ""}>${t}</option>`).join("")}
+            </select></label>
+            ${voiceBlock(d)}
             <details class="dogmore">
               <summary>Owner and address</summary>
               <div class="fields">
@@ -504,6 +554,7 @@ async function renderDogs() {
     <section>
       <form class="addform" id="addDog">
         <label>Dog's name<input type="text" id="newName" required maxlength="40" placeholder="Rex"></label>
+        <label>Size<select id="newSize"><option value="">Not sure</option><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
         <label>Owner (optional)<input type="text" id="newOwner" maxlength="80"></label>
         <label>Address (optional)<input type="text" id="newAddr" list="addrList" maxlength="120"></label>
         <button class="btn primary" type="submit">Add dog</button>
@@ -511,12 +562,12 @@ async function renderDogs() {
     </section>
     <section class="panel">
       <h2>Ignoring false alarms</h2>
-      <p class="small muted" style="margin:0">${r.not_bark_examples} sound${r.not_bark_examples === 1 ? "" : "s"} marked “Not a bark”. ${st.identifier.ready ? "Similar sounds are now dropped before they're logged." : "Mark at least " + need + " to start filtering them out."}</p>
+      <p class="small muted" style="margin:0">${r.not_bark_examples} sound${r.not_bark_examples === 1 ? "" : "s"} marked “Not a bark”. ${st.identifier.ready ? "Similar sounds are now dropped before they're logged." : "Mark at least " + need + " to start filtering them out."} <a href="#/clips" id="reviewNb">Review them</a></p>
     </section>`;
   $("#addDog").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
-      await api("/api/dogs", { method: "POST", body: { name: $("#newName").value, owner: $("#newOwner").value, address: $("#newAddr").value } });
+      await api("/api/dogs", { method: "POST", body: { name: $("#newName").value, size: $("#newSize").value, owner: $("#newOwner").value, address: $("#newAddr").value } });
       toast("Dog added"); renderDogs();
     } catch (e) { toast(e.message.includes("UNIQUE") ? "There's already a dog with that name" : e.message); }
   };
@@ -524,6 +575,7 @@ async function renderDogs() {
     await api(`/api/dogs/${i.dataset.id}`, { method: "PATCH", body: { [i.dataset.field]: i.value } });
     toast(`${i.dataset.field === "name" ? "Name" : i.dataset.field[0].toUpperCase() + i.dataset.field.slice(1)} saved`);
     if (i.dataset.field === "address") loadDogs();
+    if (i.dataset.field === "size") renderDogs();
   }));
   view.querySelectorAll("[data-color]").forEach((i) => i.addEventListener("change", async () => {
     await api(`/api/dogs/${i.dataset.color}`, { method: "PATCH", body: { color: i.value } }); renderDogs();
@@ -534,7 +586,37 @@ async function renderDogs() {
     await api(`/api/dogs/${d.id}`, { method: "DELETE" }); toast(`${d.name} removed`); renderDogs();
   }));
   view.querySelectorAll("[data-filter]").forEach((a) => a.addEventListener("click", () => { S.clipFilters = { ...S.clipFilters, dog: a.dataset.filter, offset: 0 }; }));
+  const rn = $("#reviewNb"); if (rn) rn.onclick = () => { S.clipFilters = { ...S.clipFilters, kind: "not_bark", offset: 0 }; };
   view.querySelectorAll("[data-report]").forEach((a) => a.addEventListener("click", () => { S.report = { ...(S.report || {}), subject: `dog:${a.dataset.report}` }; }));
+}
+
+
+// ------------------------------------------------------------ dog voices
+const SIZE_WORD = { small: "a small dog", medium: "a medium dog", large: "a large dog" };
+const SIZE_SOUND = { small: "high and bright", medium: "mid-range", large: "deep" };
+function fmtHz(hz) { return hz >= 1000 ? `${(hz / 1000).toFixed(1)} kHz` : `${Math.round(hz)} Hz`; }
+function shapeSvg(shape, color) {
+  if (!shape?.length) return "";
+  const W = 120, H = 28, n = shape.length, lo = -30;
+  const pts = shape.map((v, i) => `${((i / (n - 1)) * W).toFixed(1)},${(H - ((Math.max(lo, v) - lo) / -lo) * (H - 2) - 1).toFixed(1)}`).join(" ");
+  return `<svg class="shape" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Spectral shape of this dog's bark, low to high pitch"><polyline points="0,${H} ${pts} ${W},${H}" fill="${color}" fill-opacity=".18" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+function voiceBlock(d) {
+  const p = d.profile;
+  if (!p) return `<p class="voice small muted">Label a few of ${esc(d.name)}'s barks to build a voice profile.</p>`;
+  const sep = d.separation;
+  const mismatch = d.size && p.sounds_like !== d.size && p.sounds_like_share >= 0.6
+    ? ` Sounds more like ${SIZE_WORD[p.sounds_like]} than the size you set; that's common, and labels decide matching.` : "";
+  return `<div class="voice">
+    ${shapeSvg(p.shape, d.color)}
+    <dl class="voicefacts">
+      <div><dt>Pitch</dt><dd>${fmtHz(p.pitch_hz)}</dd></div>
+      <div><dt>Tone</dt><dd>${fmtHz(p.brightness_hz)}</dd></div>
+      <div><dt>Bark length</dt><dd>${p.length_s.toFixed(2)} s</dd></div>
+      <div><dt>Sounds</dt><dd>${SIZE_SOUND[p.sounds_like]}</dd></div>
+    </dl>
+    <p class="small muted" style="margin:0">From ${p.barks} confirmed bark${p.barks === 1 ? "" : "s"}.${sep ? ` Told apart from your other dogs ${Math.round(sep.accuracy * 100)}% of the time${sep.confused_with && sep.accuracy < 0.9 ? `, sometimes mixed up with ${esc(S.dogs[sep.confused_with]?.name || "another dog")}` : ""}.` : ""}${mismatch}</p>
+  </div>`;
 }
 
 // --------------------------------------------------------------- settings

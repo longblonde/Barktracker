@@ -60,7 +60,8 @@ A quiet room should read around -60 to -45 dBFS and a bark well above -30. With 
 1. **Add your dogs** on the Dogs page.
 2. **Review clips.** Open a clip, then either label the whole clip ("Who's barking in this clip?") or select individual barks on the spectrogram (shift-select for several) and label those. Clips with two dogs are best labelled bark by bark.
 3. After **3+ labelled barks per dog**, new barks are matched automatically and older unlabelled barks are re-matched. Barks it isn't sure about stay "Unidentified". More labels from different days and distances make it better.
-4. **Mark false alarms** as "Not a bark". They drop out of the stats immediately, and after a few examples, similar sounds are filtered out before they're logged.
+4. **Mark false alarms** as "Not a bark". They drop out of the stats immediately, and after a few examples, similar sounds are filtered out before they're logged. Review them under **Clips → Not a bark**. From there you can restore a clip as barking, delete just its audio (frees disk space; the Pi still remembers the sound), or delete and forget it (the filter stops using it). A button deletes the audio of all of them at once.
+5. **Set each dog's size** (small, medium, large) on the Dogs page. Until a dog has enough labels, clips whose barks sound like that size suggest it, so you can confirm with one tap. Size is only a hint: it never labels barks by itself, and once a dog has labels its learned voice decides.
 
 ## Settings
 
@@ -128,6 +129,7 @@ mic ─► 50 ms frames ─► noise floor tracker + onset gate
 - The noise floor adapts downward quickly and upward slowly, so a fan switching on raises the threshold over a few minutes without hiding barks.
 - YAMNet scores 521 AudioSet classes; Barktracker combines *Bark*, *Bow-wow*, *Yip*, *Dog*, *Howl*, *Growling* and *Whimper (dog)* with weights. In testing on real recordings it caught all dog clips and ignored birds, rain and fireworks.
 - Without YAMNet (32-bit OS, no runtime) a simple acoustic detector is used. It catches barks but also some claps, door slams and fireworks; the "Not a bark" filter helps.
+- **Voice profiles.** Each dog's card shows its typical bark pitch, tone (brightness), bark length and spectral shape from its confirmed barks, and how often the Pi tells it apart from your other dogs (checked against your own labels).
 - Dog matching uses a per-bark voice descriptor (spectral shape, brightness, pitch, length) and a nearest-neighbour vote over your labels. It works well for dogs that sound different (big vs. small, different breeds). Two dogs of the same breed and size will often stay unidentified; that's a limit of the audio, not something more labels fully fix.
 
 ## Configuration

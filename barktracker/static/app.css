@@ -207,7 +207,7 @@ audio { width: 100%; margin-top: 12px; }
 .unit input { max-width: 6.5em; }
 .criteria { margin: 4px 0 0; padding-left: 18px; font-size: 14px; color: var(--muted); }
 .criteria strong { color: var(--ink); font-weight: 600; }
-.addform { display: grid; grid-template-columns: 1fr 1fr 1.4fr auto; gap: 10px; align-items: end; }
+.addform { display: grid; grid-template-columns: 1fr auto 1fr 1.4fr auto; gap: 10px; align-items: end; }
 @media (max-width: 760px) { .addform { grid-template-columns: 1fr; } }
 .dogmore { margin-top: 8px; font-size: 14px; }
 .dogmore summary { cursor: pointer; color: var(--muted); }
@@ -371,3 +371,26 @@ body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width
 .btn.upload { justify-self: start; cursor: pointer; }
 
 .version { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); }
+
+/* ---- clip tabs, not-a-bark ---- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--rule); margin-bottom: 16px; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; margin-bottom: -1px; cursor: pointer; color: var(--muted); font-size: 15px; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+.tab .count { font-size: 12px; background: var(--faint); border-radius: 999px; padding: 1px 7px; margin-left: 4px; color: var(--muted); font-weight: 400; }
+.nbinfo { margin-bottom: 16px; }
+.notice.nb { border-color: var(--danger); }
+
+/* ---- dog voices ---- */
+.sizepick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-top: 8px; }
+.sizepick select { font-size: 14px; border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 3px 6px; background: var(--panel); color: var(--ink); }
+.voice { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; align-items: center; margin-top: 10px; max-width: 640px; }
+.voice > p { grid-column: 1 / -1; }
+.voice .shape { display: block; }
+.voicefacts { display: flex; gap: 18px; flex-wrap: wrap; margin: 0; }
+.voicefacts dt { font-size: 11px; color: var(--muted); }
+.voicefacts dd { margin: 0; font-size: 14px; font-weight: 600; }
+.chip.suggest { border-style: dashed; border-color: var(--c); }
+.chip .sugg { font-size: 11px; color: var(--muted); font-weight: 400; }
+@media (max-width: 640px) { .voice { grid-template-columns: 1fr; } }
+
+.filters[hidden] { display: none; }

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS dogs (
     owner TEXT DEFAULT '',
     address TEXT DEFAULT '',
     description TEXT DEFAULT '',
+    size TEXT DEFAULT '',
     created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS episodes (
@@ -71,7 +72,7 @@ class Store:
             if "refined" not in ecols:
                 c.execute("ALTER TABLE episodes ADD COLUMN refined INTEGER NOT NULL DEFAULT 0")
             cols = {r[1] for r in c.execute("PRAGMA table_info(dogs)")}
-            for col in ("owner", "address", "description"):   # migrate older databases
+            for col in ("owner", "address", "description", "size"):   # migrate older databases
                 if col not in cols:
                     c.execute(f"ALTER TABLE dogs ADD COLUMN {col} TEXT DEFAULT ''")
 
@@ -129,21 +130,21 @@ class Store:
         return self.q("SELECT * FROM dogs ORDER BY id")
 
     def add_dog(self, name: str, color: str | None = None, notes: str = "", owner: str = "",
-                address: str = "", description: str = "") -> dict:
+                address: str = "", description: str = "", size: str = "") -> dict:
         name = name.strip()
         if not name:
             raise ValueError("name required")
         with self.tx() as c:
             n = c.execute("SELECT COUNT(*) FROM dogs").fetchone()[0]
             color = color or PALETTE[n % len(PALETTE)]
-            cur = c.execute("INSERT INTO dogs(name, color, notes, owner, address, description, created)"
-                            " VALUES (?,?,?,?,?,?,?)",
-                            (name, color, notes, owner, address, description, time.time()))
+            cur = c.execute("INSERT INTO dogs(name, color, notes, owner, address, description, size, created)"
+                            " VALUES (?,?,?,?,?,?,?,?)",
+                            (name, color, notes, owner, address, description, size, time.time()))
             did = cur.lastrowid
         return self.q1("SELECT * FROM dogs WHERE id=?", (did,))
 
     def update_dog(self, dog_id: int, **fields) -> dict | None:
-        allowed = {k: v for k, v in fields.items() if k in ("name", "color", "notes", "owner", "address", "description") and v is not None}
+        allowed = {k: v for k, v in fields.items() if k in ("name", "color", "notes", "owner", "address", "description", "size") and v is not None}
         if allowed:
             with self.tx() as c:
                 sets = ", ".join(f"{k}=?" for k in allowed)

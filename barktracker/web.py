@@ -26,6 +26,7 @@ from . import features as F
 from . import ordinance as O
 from . import settings as S
 from .live import LiveMode
+from . import voice as V
 from .app import BarkApp
 from .audio import read_wav
 from .storage import NOT_BARK
@@ -45,6 +46,7 @@ class DogIn(BaseModel):
     owner: str | None = None
     address: str | None = None
     description: str | None = None
+    size: str | None = None
 
 
 class LabelIn(BaseModel):
@@ -219,9 +221,11 @@ def create_app(bark: BarkApp) -> FastAPI:
     @app.get("/api/episodes")
     def episodes(limit: int = 50, offset: int = 0, dog: str | None = None,
                  unreviewed: bool = False, include_fp: bool = False, min_duration: float = 0.0,
-                 date_from: str | None = None, date_to: str | None = None):
+                 date_from: str | None = None, date_to: str | None = None, kind: str = "barking"):
         where, args = ["1=1"], []
-        if not include_fp:
+        if kind == "not_bark":
+            where.append("e.false_positive=1")
+        elif not include_fp:
             where.append("e.false_positive=0")
         if unreviewed:
             where.append("e.reviewed=0")
@@ -275,7 +279,7 @@ def create_app(bark: BarkApp) -> FastAPI:
                         " ORDER BY start_ts DESC LIMIT 1", (e["start_ts"],))
         nxt = store.q1("SELECT id FROM episodes WHERE start_ts > ? AND false_positive=0"
                        " ORDER BY start_ts LIMIT 1", (e["start_ts"],))
-        return {**ep_view(e, s), "barks": barks,
+        return {**ep_view(e, s), "barks": barks, "sound": V.episode_sound(store, eid),
                 "prev_id": prev["id"] if prev else None, "next_id": nxt["id"] if nxt else None}
 
     @app.get("/api/episodes/{eid}/audio")
@@ -327,13 +331,49 @@ def create_app(bark: BarkApp) -> FastAPI:
         return {"identifier": bark.retrain()}
 
     @app.delete("/api/episodes/{eid}")
-    def delete_episode(eid: int):
-        get_ep(eid)
+    def delete_episode(eid: int, keep_training: bool = False):
+        """keep_training=true removes only the audio: the episode stays (hidden) and its sounds
+        keep teaching the identifier, e.g. a "Not a bark" example the filter learned from."""
+        e = get_ep(eid)
+        if keep_training:
+            if e["clip_path"]:
+                Path(e["clip_path"]).unlink(missing_ok=True)
+                store.clear_clip(eid)
+            return {"ok": True, "kept_training": True}
         path = store.delete_episode(eid)
         if path:
             Path(path).unlink(missing_ok=True)
         bark.retrain()
         return {"ok": True}
+
+    @app.get("/api/not-bark")
+    def not_bark_summary():
+        rows = store.q("SELECT id, clip_path FROM episodes WHERE false_positive=1")
+        with_audio = [r for r in rows if r["clip_path"] and Path(r["clip_path"]).exists()]
+        size = sum(Path(r["clip_path"]).stat().st_size for r in with_audio)
+        inside = store.q1("SELECT COUNT(*) n FROM barks b JOIN episodes e ON e.id=b.episode_id"
+                          " WHERE b.label_dog_id=0 AND e.false_positive=0")["n"]
+        examples = store.q1("SELECT COUNT(*) n FROM barks WHERE label_dog_id=0 AND features IS NOT NULL")["n"]
+        return {"episodes": len(rows), "with_audio": len(with_audio), "audio_mb": round(size / 2**20, 1),
+                "sounds_inside_barking_clips": inside, "training_examples": examples,
+                "filter_active": bool(bark.identifier and NOT_BARK in bark.identifier.classes)}
+
+    @app.post("/api/not-bark/delete-audio")
+    def not_bark_delete_audio():
+        """Free disk space from every "Not a bark" clip while keeping what the filter learned."""
+        n, freed = 0, 0
+        for r in store.q("SELECT id, clip_path FROM episodes WHERE false_positive=1 AND clip_path IS NOT NULL"):
+            p = Path(r["clip_path"])
+            if p.exists():
+                freed += p.stat().st_size
+                p.unlink(missing_ok=True)
+            store.clear_clip(r["id"])
+            n += 1
+        return {"deleted": n, "freed_mb": round(freed / 2**20, 1), **not_bark_summary()}
+
+    def _check_size(size):
+        if size not in (None, "", *V.SIZES):
+            raise HTTPException(400, "size must be small, medium or large")
 
     def _check_dog(dog_id):
         if dog_id not in (None, NOT_BARK) and not store.q1("SELECT 1 FROM dogs WHERE id=?", (dog_id,)):
@@ -347,19 +387,24 @@ def create_app(bark: BarkApp) -> FastAPI:
             d["labelled_barks"] = store.q1("SELECT COUNT(*) n FROM barks WHERE label_dog_id=?", (d["id"],))["n"]
             d["predicted_barks"] = store.q1("SELECT COUNT(*) n FROM barks WHERE label_dog_id IS NULL"
                                             " AND pred_dog_id=?", (d["id"],))["n"]
+        voices = V.dog_profiles(store)
+        for d in rows:
+            d.update(voices.get(d["id"], {}))
         nb = store.q1("SELECT COUNT(*) n FROM barks WHERE label_dog_id=0")["n"]
         return {"dogs": rows, "not_bark_examples": nb, "min_labels": cfg.identify.min_labels_per_dog}
 
     @app.post("/api/dogs")
     def add_dog(body: DogIn):
         try:
+            _check_size(body.size)
             return store.add_dog(body.name or "", body.color, body.notes or "", body.owner or "",
-                                 body.address or "", body.description or "")
+                                 body.address or "", body.description or "", body.size or "")
         except Exception as e:  # noqa: BLE001
             raise HTTPException(400, str(e))
 
     @app.patch("/api/dogs/{dog_id}")
     def edit_dog(dog_id: int, body: DogIn):
+        _check_size(body.size)
         d = store.update_dog(dog_id, **body.model_dump())
         if not d:
             raise HTTPException(404)
