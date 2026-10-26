@@ -74,7 +74,8 @@ def create_app(bark: BarkApp) -> FastAPI:
         if not ok:
             raise HTTPException(401, headers={"WWW-Authenticate": "Basic"})
 
-    app = FastAPI(title="Barktracker", dependencies=[Depends(auth)], docs_url="/api/docs")
+    build = S.build_info()          # looked up once at startup
+    app = FastAPI(title="Barktracker", version=build["version"], dependencies=[Depends(auth)], docs_url="/api/docs")
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     # ---- time helpers -------------------------------------------------------
@@ -142,6 +143,7 @@ def create_app(bark: BarkApp) -> FastAPI:
                          "retention_days": cfg.clips.retention_days,
                          "timezone": cfg.timezone or "system"},
             "clock": clock_status(),
+            "build": build,
             "audio_device": getattr(bark.source, "device_name", None),
         }
 
@@ -402,7 +404,8 @@ def create_app(bark: BarkApp) -> FastAPI:
                 "disk": S.disk_usage(cfg, store),
                 "info": {"timezone": cfg.timezone or "system", "data_dir": str(cfg.data_path),
                          "media_dir": str(cfg.media_path), "model": bark.detector.classifier.name if bark.detector else None,
-                         "audio_device": getattr(bark.source, "device_name", None)}}
+                         "audio_device": getattr(bark.source, "device_name", None)},
+                "build": build}
 
     @app.put("/api/settings")
     def put_settings(body: dict = Body(...)):

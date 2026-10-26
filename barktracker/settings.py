@@ -144,3 +144,21 @@ def disk_usage(cfg: Config, store) -> dict:
         "oldest_clip_ts": oldest,
         "path": str(data),
     }
+
+
+def build_info() -> dict:
+    """App version plus the git commit it's running, so you can tell whether a `git pull` took."""
+    import subprocess
+    from datetime import datetime, timezone
+    from . import __version__
+    repo = Path(__file__).resolve().parent.parent
+    info = {"version": __version__, "commit": None, "commit_date": None}
+    try:
+        out = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%h %ct"],
+                             capture_output=True, text=True, timeout=3).stdout.split()
+        if len(out) == 2:
+            info["commit"] = out[0]
+            info["commit_date"] = datetime.fromtimestamp(int(out[1]), timezone.utc).date().isoformat()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return info

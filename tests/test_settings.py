@@ -152,3 +152,12 @@ def test_bark_words_setting(tmp_path):
     assert cfg.ui.bark_words is False
     assert c.get("/api/settings").json()["values"]["ui.bark_words"] is False
     app.shutdown()
+
+
+def test_version_shown(tmp_path):
+    from barktracker import __version__
+    cfg, app, c = make(tmp_path)
+    b = c.get("/api/settings").json()["build"]
+    assert b["version"] == __version__
+    assert c.get("/api/status").json()["build"]["version"] == __version__
+    app.shutdown()

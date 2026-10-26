@@ -183,6 +183,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="barktracker", description="Raspberry Pi bark logger")
     p.add_argument("-c", "--config", help="path to config.yaml")
     p.add_argument("-v", "--verbose", action="store_true")
+    from . import __version__
+    p.add_argument("--version", action="version", version=f"barktracker {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("run", help="listen and serve the dashboard (default service command)")

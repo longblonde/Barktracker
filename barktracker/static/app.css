@@ -369,3 +369,5 @@ body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width
 .thumb figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
 .linkbtn { background: none; border: 0; padding: 0; color: var(--danger); cursor: pointer; font-size: 12px; text-decoration: underline; }
 .btn.upload { justify-self: start; cursor: pointer; }
+
+.version { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); }

@@ -548,7 +548,8 @@ async function renderSettings() {
   view.innerHTML = `
     <section><h1>Settings</h1><p class="sub">Changes take effect right away and are kept on this Pi.</p></section>
     <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}">${t}</a>`).join("")}</nav>
-    ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}`;
+    ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}
+    <footer class="version">Barktracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
   drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures({ ...media, barkWords: st.values["ui.bark_words"] !== false }); drawNotify(st); drawSystem(st);
   if (route.arg) $(`#sec-${route.arg}`)?.scrollIntoView();
 }
