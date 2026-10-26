@@ -174,3 +174,15 @@ def test_improved_refine_redoes_saved_clips_once(tmp_path):
         c.execute("UPDATE episodes SET refined=1")
     assert app.queue_unrefined() == 0                 # current logic: not redone again
     app.shutdown()
+
+
+def test_quiet_bark_onset_does_not_run_back_into_noise():
+    # A bark only ~10 dB above the background never gets 12 dB down before the noise, so the
+    # attack used to be placed up to 0.3 s early (on the previous sound). It should sit on the rise.
+    from barktracker import features as F
+    rng = np.random.default_rng(1)
+    env = rng.normal(-3.0, 0.8, 200)            # noisy background, ~1 dB above its 20th percentile
+    env[100:104] = [0.0, 4.0, 6.0, 7.0]         # quiet bark rising at frame 100
+    env[104:120] = np.linspace(7.0, -2.0, 16)
+    a = [x for x in F.find_attacks(env, min_rise=6.0) if 95 <= x["peak"] <= 110]
+    assert a and 97 <= a[0]["onset"] <= 101

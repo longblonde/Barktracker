@@ -230,8 +230,12 @@ def find_attacks(env: np.ndarray, floor: float | None = None, min_rise: float = 
         lo, hi = max(0, i - sep), min(n, i + sep + 1)
         if v < env[lo:hi].max() or (i > lo and np.any(env[lo:i] == v)):
             continue
-        k = i                                      # attack: walk back to where it was 12 dB down
-        while k > 0 and env[k - 1] >= v - 12.0 and i - k < 30:
+        # attack: walk back to where it was 12 dB down. A quiet bark (less than ~16 dB above the
+        # floor) never gets 12 dB down before the background noise, so for those stop 4 dB above
+        # the floor instead; otherwise the walk runs through the noise into the previous sound.
+        down = min(12.0, max(3.0, v - floor - 4.0))
+        k = i
+        while k > 0 and env[k - 1] >= v - down and i - k < 30:
             k -= 1
         e = i                                      # end: decays 15 dB, nears the floor, or next attack
         while (e + 1 < n and env[e + 1] >= v - 15.0 and env[e + 1] >= floor + 4.0 and e - i < 150

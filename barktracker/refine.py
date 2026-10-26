@@ -23,9 +23,11 @@ from .storage import NOT_BARK, Store
 
 log = logging.getLogger(__name__)
 
-REFINE_VERSION = 2                  # bump when this logic changes: the Pi re-scans saved clips once
+REFINE_VERSION = 3                  # bump when this logic changes: the Pi re-scans saved clips once
 OFFSETS = (0.05, 0.15, 0.25, 0.4)   # where the attack sits in the ~1 s model window; best one wins
-MIN_RISE_DB = 12.0                  # a strong attack, well above the room...
+MIN_RISE_DB = 12.0                  # a strong attack, well above the background noise...
+QUIET_MIN_RISE_DB = 8.0             # ...or, when even the sure barks are quiet (distant dog, low
+QUIET_MARGIN_DB = 4.0               #    mic gain), one within this of their loudness, down to 8 dB
 MIN_DOGNESS = 0.15                  # ...that sounds like a dog counts, inside a confirmed episode
 SIMILAR_CORR = 0.7                  # or one shaped like a bark already confirmed in this clip...
 SIMILAR_RISE_DB = 6.0               # ...and nearly as loud as those barks (repeat barks of the same dog)
@@ -88,9 +90,12 @@ def refine_episode(store: Store, episode_id: int, classifier, identifier, thresh
     # sure barks in this clip (a faint sound before loud barking doesn't ride along).
     sure = [c for c in cands if c["prob"] >= threshold]
     ref_rise = float(np.median([c["rise"] for c in sure])) if sure else None
+    # "Strong" is relative: if the barks the model is sure of only stand ~11 dB above the background,
+    # a 12 dB bar would drop their quieter repeats.
+    strong = MIN_RISE_DB if ref_rise is None else min(MIN_RISE_DB, max(QUIET_MIN_RISE_DB, ref_rise - QUIET_MARGIN_DB))
     for c in cands:
         c["ok"] = c["prob"] >= threshold or (
-            c["rise"] >= MIN_RISE_DB and c["dogness"] >= MIN_DOGNESS
+            c["rise"] >= strong and c["dogness"] >= MIN_DOGNESS
             and (ref_rise is None or c["rise"] >= ref_rise - LOUDNESS_MATCH_DB))
 
     # Third chance: a dog usually repeats itself. A strong attack the model was unsure about still
@@ -109,16 +114,17 @@ def refine_episode(store: Store, episode_id: int, classifier, identifier, thresh
             return v - v.mean()
 
         ref = [shape(c["a"]) for c in accepted]
-        rise_ok = max(MIN_RISE_DB, float(np.median([c["rise"] for c in accepted])) - SIMILAR_RISE_DB)
+        rise_ok = max(strong, float(np.median([c["rise"] for c in accepted])) - SIMILAR_RISE_DB)
         for c in cands:
             if not c["ok"] and c["rise"] >= rise_ok:
                 sh = shape(c["a"])
-                if max(float(np.corrcoef(sh, rf)[0, 1]) for rf in ref) >= SIMILAR_CORR:
+                c["corr"] = max(float(np.corrcoef(sh, rf)[0, 1]) for rf in ref)
+                if c["corr"] >= SIMILAR_CORR:
                     c["ok"], c["prob"] = True, max(c["prob"], threshold)
 
     for c in cands:
-        log.debug("candidate %.2fs rise=%.1fdB bark=%.2f dog=%.2f -> %s", c["on"] / F.SR, c["rise"],
-                  c["prob"], c["dogness"], "bark" if c["ok"] else "no")
+        log.debug("candidate %.2fs rise=%.1fdB bark=%.2f dog=%.2f corr=%s -> %s", c["on"] / F.SR, c["rise"],
+                  c["prob"], c["dogness"], round(c.get("corr", -1), 2), "bark" if c["ok"] else "no")
     found, prev = [], None
     for c in cands:
         if not c["ok"]:
