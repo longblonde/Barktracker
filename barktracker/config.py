@@ -71,6 +71,8 @@ class NotifyConfig:
 class UiConfig:
     media_dir: str | None = None         # folder holding quiet/, active/ and bark/ pictures; default <data_dir>/media
     bark_words: bool = True              # red BARK words over the live band when a bark is detected
+    day_nap: bool = True                 # show the napping dog in the daytime too when it's quiet...
+    day_nap_below_dbfs: float = -50.0    # ...meaning background noise below this level
 
 
 @dataclass

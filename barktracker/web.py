@@ -470,6 +470,16 @@ def create_app(bark: BarkApp) -> FastAPI:
     def live():
         return livemode.snapshot(bark.detector, bark.error)
 
+    @app.get("/api/audio/devices")
+    def audio_devices():
+        from .audio import list_inputs, short_name
+        info = list_inputs()
+        current = getattr(bark.source, "device_name", None)
+        for d in info["devices"]:
+            d["active"] = bool(current) and short_name(d["name"]) == short_name(current)
+        return {**info, "current": current, "configured": cfg.audio.device,
+                "listening": bark.detector is not None}
+
     @app.get("/api/live/stream")
     async def live_stream(request: Request, count: int = 0):
         """Server-sent events with the picture mode, bark state and EQ bands.

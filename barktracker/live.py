@@ -2,8 +2,9 @@
 
 Modes:
   bark - a bark was detected (stays on while the episode is open, and briefly after)
-  sit  - medium noise or louder without a bark, or any time outside quiet hours
-  nap  - quiet during quiet hours (from the ordinance code parameters)
+  sit  - medium noise or louder without a bark, or daytime with some background noise
+  nap  - quiet during quiet hours (from the ordinance code parameters), or a daytime whose
+         background noise is below the daytime-nap level (Settings > Live band)
 
 Switching between nap and sit waits a few seconds so a single car door doesn't flip the picture.
 """
@@ -67,7 +68,9 @@ class LiveMode:
         level, floor = self.smoothed_level(det)
         noisy = level - floor >= NOISY_ABOVE_FLOOR_DB or level >= NOISY_ABSOLUTE_DBFS
         quiet_hours = self.quiet_hours_now(now)
-        want = "bark" if barking else ("sit" if noisy or not quiet_hours else "nap")
+        ui = self.cfg.ui
+        day_quiet = ui.day_nap and level < ui.day_nap_below_dbfs     # a calm daytime counts as nap too
+        want = "bark" if barking else ("sit" if noisy else "nap" if quiet_hours or day_quiet else "sit")
         with self._lock:
             if want == "bark" or self.mode in (None, "bark"):
                 self.mode, self.candidate = want, None
@@ -83,7 +86,8 @@ class LiveMode:
             "state": "barking" if barking else "idle", "mode": mode,
             "barks": det.stats.get("barks", 0), "episode_barks": ep.barks if ep else 0,
             "level_db": round(det.prev_level, 1), "floor_db": round(det.floor or -90, 1),
-            "noisy": bool(noisy), "quiet_hours": quiet_hours,
+            "noisy": bool(noisy), "quiet_hours": quiet_hours, "ambient_db": round(level, 1),
+            "day_quiet": bool(day_quiet),
             "bands": [round(float(v), 2) for v in det.eq],
             "error": error,
         }

@@ -283,7 +283,7 @@ audio { width: 100%; margin-top: 12px; }
 }
 .beat[data-state="barking"] { background: color-mix(in srgb, var(--bark) 9%, var(--panel)); }
 .beat-frame {
-  position: relative; display: block; width: 184px; aspect-ratio: 4 / 3; border-radius: var(--radius);
+  position: relative; display: block; width: 212px; aspect-ratio: 4 / 3; border-radius: var(--radius);
   overflow: hidden; background: var(--faint); box-shadow: 0 0 0 1px var(--rule);
 }
 .beat[data-state="barking"] .beat-frame { box-shadow: 0 0 0 2px var(--bark); }
@@ -322,9 +322,9 @@ audio { width: 100%; margin-top: 12px; }
 }
 @media (max-width: 640px) {
   .beat { gap: 12px; padding: 10px 16px; }
-  .beat-frame { width: 116px; }
+  .beat-frame { width: 132px; }
   .beat-title strong { font-size: 18px; display: block; }
-  .beat-eq { min-height: 30px; }
+  .beat-eq { min-height: 44px; }
 }
 @media print { .beat { display: none !important; } }
 
@@ -335,7 +335,7 @@ body.kiosk .beat-frame { width: auto; height: 100%; max-width: 100%; justify-sel
 body.kiosk .beat-info { max-width: 900px; width: 100%; justify-self: center; text-align: center; }
 body.kiosk .beat-title { font-size: 20px; }
 body.kiosk .beat-title strong { font-size: 44px; display: block; margin: 0 0 4px; }
-body.kiosk .beat-eq { flex: none; height: 220px; }
+body.kiosk .beat-eq { flex: none; height: 260px; }
 body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width: none; margin: 0; z-index: 5; }
 .kiosk-exit { opacity: .6; text-decoration: none; }
 .kiosk-exit:hover, .kiosk-exit:focus-visible { opacity: 1; }
@@ -394,3 +394,10 @@ body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width
 @media (max-width: 640px) { .voice { grid-template-columns: 1fr; } }
 
 .filters[hidden] { display: none; }
+
+.microw { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.microw select { flex: 0 1 26em; width: auto; font-size: 15px; border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 6px 8px; background: var(--panel); color: var(--ink); min-width: 18em; max-width: 100%; }
+.daynap { display: grid; gap: 8px; justify-items: start; padding: 10px 0 4px; border-top: 1px solid var(--faint); border-bottom: 1px solid var(--faint); }
+.miclist { list-style: none; margin: 4px 0 10px; padding: 0; display: grid; gap: 4px; font-size: 14px; }
+.miclist .pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--faint); color: var(--ink); }
+.microw + p { margin-top: 8px; }

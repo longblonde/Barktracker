@@ -9,6 +9,7 @@ audio:
   device: auto                 # auto = first USB webcam/mic found (Logitech C920/C922/Brio...).
                                # Or part of a name ("C920"), an index, or null for the system default.
                                # List devices with:  .venv/bin/python -m barktracker devices
+                               # (or switch on Settings -> System -> Microphone, no restart)
   samplerate: 16000            # falls back to the mic's own rate (e.g. 32000/48000) automatically
   channels: 0                  # 0 = auto; webcam stereo is mixed to mono
   gain_db: 0                   # software boost for quiet mics (try 6-12)
@@ -45,3 +46,8 @@ web:
 notify:
   webhook_url: null            # POSTs JSON when an episode ends, e.g. https://ntfy.sh/my-barktracker
   min_duration: 30             # only for episodes at least this long (seconds)
+
+ui:
+  bark_words: true             # red BARK words over the live band while barking
+  day_nap: true                # show the napping dog in the daytime when it's calm...
+  day_nap_below_dbfs: -50      # ...meaning background noise below this level

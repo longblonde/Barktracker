@@ -32,6 +32,9 @@ class BarkApp:
         if self.identifier:
             retrain_and_repredict(self.store, self.identifier)
         self.source = source
+        if source is not None and hasattr(source, "switch"):      # mic choice / boost saved from the dashboard
+            source.device = cfg.audio.device
+            source.gain = 10 ** (cfg.audio.gain_db / 20)
         self.detector: BarkDetector | None = None
         self.stop = threading.Event()
         self.error: str | None = None
@@ -118,6 +121,8 @@ class BarkApp:
         self._settings_side_effects(list(settings_mod.SPECS))
 
     def _settings_side_effects(self, changed: list[str]) -> None:
+        if "audio.device" in changed and hasattr(self.source, "switch"):
+            self.source.switch(self.cfg.audio.device)
         if "audio.gain_db" in changed and hasattr(self.source, "gain"):
             self.source.gain = 10 ** (self.cfg.audio.gain_db / 20)
         if any(k.startswith("identify.") for k in changed) and self.identifier:

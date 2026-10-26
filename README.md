@@ -10,7 +10,7 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 - **Episodes, not just barks.** Barks less than 8 s apart (configurable) are grouped into one episode with a start time, duration, bark count and peak level.
 - **Clips for review.** Each episode is saved as a WAV with 2 s of lead-in and lead-out. The clip page shows a spectrogram with every bark marked; click a bark to hear it alone.
 - **Which dog.** Label a few barks per dog in the dashboard and new barks are matched to the closest voice automatically. Mark false alarms as "Not a bark" and similar sounds get ignored from then on.
-- **Live band on every page.** A picture that matches what's happening (a napping dog during quiet hours, a sitting dog in the daytime or when there's noise without barking, a barking dog the moment a bark is detected) next to a live EQ of the microphone. Each column's top cell is the bright peak and the stack under it is half strength, so the tops read as a line of sound; bars fall with gravity and peaks hang briefly. It's monotone in the site's colors normally and switches to caution yellow while a dog is barking, with optional red BARK words popping in at random sizes and angles. It updates 6 times a second while quiet and 20 while barking. Use your own photos, GIFs or video loops. Click the picture for a full-screen view you can leave on a spare screen or tablet.
+- **Live band on every page.** A picture that matches what's happening (a napping dog during quiet hours, a sitting dog in the daytime or when there's noise without barking, a barking dog the moment a bark is detected) next to a live EQ of the microphone, labelled in Hz (100 Hz to 7 kHz, log scale; most barks sit between 300 Hz and 3.5 kHz). Each column's top cell is the bright peak and the stack under it is half strength, so the tops read as a line of sound; bars fall with gravity and peaks hang briefly. It's monotone in the site's colors normally and switches to caution yellow while a dog is barking, with optional red BARK words popping in at random sizes and angles. It updates 6 times a second while quiet and 20 while barking. Use your own photos, GIFs or video loops. Click the picture for a full-screen view you can leave on a spare screen or tablet.
 - **Dashboard.** Plain-language daily summary, a 24-hour timeline coloured by dog, two-week totals, an hour-by-weekday heatmap, clip list with filters.
 - **Your local ordinance.** Enter the animal-noise rule that applies where you live (Burnsville, MN is the default) and the criteria for incidents worth reporting: sustained barking, barking in quiet hours, frequent days, habitual patterns.
 - **Complaint reports.** Per dog or per neighbor's household, for any date range: print or save as PDF, download a clean CSV, or download every clip plus the CSVs as a zip for evidence.
@@ -53,7 +53,7 @@ sudo systemctl stop barktracker
 sudo systemctl start barktracker
 ```
 
-A quiet room should read around -60 to -45 dBFS and a bark well above -30. With several USB audio devices plugged in, set `audio.device` in `config.yaml` to part of the webcam's name (e.g. `C920`). The **System** section of Settings shows the live level, the learned background noise and the trigger line.
+Calm background noise should read around -60 to -45 dBFS and a bark well above -30. With several USB audio devices plugged in, pick the one to use under **Settings → System → Microphone** (it switches in about a second, no restart), or set `audio.device` in `config.yaml` to part of its name (e.g. `C920`). The **System** section of Settings shows the live level, the learned background noise and the trigger line.
 
 ## Using it
 
@@ -67,13 +67,13 @@ A quiet room should read around -60 to -45 dBFS and a bark well above -30. With 
 
 Everything adjustable lives on the **Settings** page and takes effect immediately, no restart needed:
 
+- **Detection** (first, so the live EQ in the band above is on screen while you tune): bark confidence, loudness trigger, quiet floor, microphone boost, episode gap, smallest episode, ignoring learned false alarms.
 - **Storage:** disk usage (clips, log, system, free space), how much audio recent barking adds per day and how many days the cap holds, clip retention, disk cap, clip length, pre and post roll.
-- **Detection:** bark confidence, loudness trigger, quiet floor, microphone boost, episode gap, smallest episode, ignoring learned false alarms.
 - **Code parameters:** quiet hours, sustained-barking minutes, allowed break, frequent-day total, habitual pattern.
 - **Ordinance and contacts:** rule text, code section, source, penalty, where to report, and your details for reports.
-- **Live band:** turn the BARK words on or off, and add or remove the nap, sit and bark pictures.
+- **Live band:** turn the BARK words on or off, daytime napping and its background-noise threshold (with the current ambient level shown), and add or remove the nap, sit and bark pictures.
 - **Alerts and dog matching:** webhook, alert threshold, matching confidence.
-- **System:** live mic level, detector status, clock sync.
+- **System:** the microphones plugged in (name, channels, rate, which one is in use) with a picker to switch between them without restarting, live mic level, detector status, clock sync.
 
 Dashboard changes are stored on the Pi as overrides of `config.yaml`; "Restore config.yaml values" undoes them.
 
@@ -83,8 +83,8 @@ The band shows one of three pictures:
 
 | Picture | When | Folder |
 |---|---|---|
-| Napping | Quiet hours (from Code parameters) and the room is calm | `data/media/quiet/` |
-| Sitting | Daytime, or noise at least 8 dB above the room's background (or louder than -38 dBFS) without barking | `data/media/active/` |
+| Napping | Calm (no noise above the background) during quiet hours, or in the daytime when the background noise is below the daytime-nap threshold (-50 dBFS by default) | `data/media/quiet/` |
+| Sitting | Daytime with background noise above that threshold, or any sound at least 8 dB above the background noise (or louder than -38 dBFS) without barking | `data/media/active/` |
 | Barking | A bark is detected, for as long as the episode lasts | `data/media/bark/` |
 
 Switching between napping and sitting waits 4 seconds so a passing car doesn't flip it; barking switches immediately. Put your own files in those folders or upload them on Settings; if a folder has several, one is picked at random. JPG, PNG, GIF, WebP, SVG, MP4 and WebM all work. Until you add your own, the built-in drawings are used.

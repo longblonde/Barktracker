@@ -621,7 +621,7 @@ function voiceBlock(d) {
 
 // --------------------------------------------------------------- settings
 const SETTINGS_SECTIONS = [
-  ["storage", "Storage"], ["detection", "Detection"], ["code", "Code parameters"], ["ordinance", "Ordinance and contacts"],
+  ["detection", "Detection"], ["storage", "Storage"], ["code", "Code parameters"], ["ordinance", "Ordinance and contacts"],
   ["pictures", "Live band"], ["notify", "Alerts and dog matching"], ["system", "System"],
 ];
 async function renderSettings() {
@@ -632,7 +632,7 @@ async function renderSettings() {
     <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}">${t}</a>`).join("")}</nav>
     ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}
     <footer class="version">Barktracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
-  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures({ ...media, barkWords: st.values["ui.bark_words"] !== false }); drawNotify(st); drawSystem(st);
+  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures({ ...media, barkWords: st.values["ui.bark_words"] !== false, dayNap: st.values["ui.day_nap"] !== false, dayNapBelow: st.values["ui.day_nap_below_dbfs"] }); drawNotify(st); drawSystem(st);
   if (route.arg) $(`#sec-${route.arg}`)?.scrollIntoView();
 }
 
@@ -702,10 +702,10 @@ function drawStorage(st) {
 
 function drawDetection(st) {
   const v = st.values;
-  settingsForm("detection", "Detection", "How sensitive the Pi is. If it misses barks, lower the bark confidence or the loudness trigger. If it logs things that aren't barks, raise them, or mark those clips “Not a bark”.", `
+  settingsForm("detection", "Detection", "How sensitive the Pi is. Watch the live band above while you adjust: if it misses barks, lower the bark confidence or the loudness trigger; if it logs things that aren't barks, raise them, or mark those clips “Not a bark”. Changes apply as soon as you save.", `
     <label>Bark confidence needed <span class="unit"><input type="range" name="detection.bark_threshold" min="0.05" max="0.95" step="0.05" value="${v["detection.bark_threshold"]}" oninput="this.nextElementSibling.textContent=Math.round(this.value*100)+'%'"><output>${Math.round(v["detection.bark_threshold"] * 100)}%</output></span><span class="help">How sure the sound model must be. Default 35%.</span></label>
     <div class="grid3">
-      ${fieldNum("detection.trigger_db", "Loudness trigger", v["detection.trigger_db"], { unit: "dB above background", min: 3, max: 30, help: "A sound must be this much louder than the room to be checked." })}
+      ${fieldNum("detection.trigger_db", "Loudness trigger", v["detection.trigger_db"], { unit: "dB above background", min: 3, max: 30, help: "A sound must be this much louder than the background noise to be checked." })}
       ${fieldNum("detection.min_level_dbfs", "Ignore sounds quieter than", v["detection.min_level_dbfs"], { unit: "dBFS", min: -90, max: -20 })}
       ${fieldNum("audio.gain_db", "Microphone boost", v["audio.gain_db"], { unit: "dB", min: -12, max: 30, help: "Webcams adjust their own gain; leave at 0 unless barks look quiet." })}
       ${fieldNum("detection.episode_gap", "Quiet time that ends an episode", v["detection.episode_gap"], { unit: "seconds", min: 1, max: 120, step: 0.5 })}
@@ -802,12 +802,32 @@ function drawPictures(m) {
     <h2>Live band</h2>
     <p class="small muted intro">The band at the top of every page shows one of three pictures. Photos, GIFs, SVGs and short MP4 or WebM loops all work; if a folder has several, one is picked at random. You can also copy files straight into <code>${esc(m.folder)}/quiet</code>, <code>/active</code> and <code>/bark</code> on the Pi.</p>
     <label class="check"><input type="checkbox" id="barkWords" ${m.barkWords ? "checked" : ""}> Show red BARK words when a bark is detected</label>
+    <form class="daynap" id="dayNapForm">
+      <label class="check"><input type="checkbox" name="ui.day_nap" ${m.dayNap ? "checked" : ""}> Show the napping dog in the daytime when it's calm</label>
+      <label>Calm means background noise below<span class="unit"><input type="number" name="ui.day_nap_below_dbfs" value="${m.dayNapBelow}" min="-90" max="-10" step="1" required>dBFS</span>
+        <span class="help" id="ambNow">Background noise right now: measuring…</span></label>
+      <button class="btn" type="submit">Save</button>
+    </form>
     <div class="three">
-      ${col("quiet", "Napping", "Quiet hours, when it's calm.")}
-      ${col("active", "Sitting", "Daytime, or noise without barking.")}
+      ${col("quiet", "Napping", "Quiet hours, or a calm daytime (see above).")}
+      ${col("active", "Sitting", "Daytime background noise, or louder sounds without barking.")}
       ${col("bark", "Barking", "While a bark is being detected.")}
     </div>
   </div>`;
+  $("#dayNapForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await api("/api/settings", { method: "PUT", body: { values: { "ui.day_nap": f.elements["ui.day_nap"].checked, "ui.day_nap_below_dbfs": f.elements["ui.day_nap_below_dbfs"].value } } });
+      toast("Daytime napping saved");
+    } catch (err) { toast(err.message); }
+  };
+  clearInterval(S.ambTimer);
+  S.ambTimer = setInterval(() => {
+    const el = $("#ambNow"); if (!el) { clearInterval(S.ambTimer); return; }
+    const l = Beat.latest();
+    el.textContent = l.ambient_db != null ? `Background noise right now: ${Math.round(l.ambient_db)} dBFS` : "Background noise right now: not available (not listening)";
+  }, 1000);
   $("#barkWords").onchange = async (e) => {
     try {
       await api("/api/settings", { method: "PUT", body: { values: { "ui.bark_words": e.target.checked } } });
@@ -821,17 +841,18 @@ function drawPictures(m) {
       try { r = await fetch(`/api/media/${inp.dataset.up}/${encodeURIComponent(f.name)}`, { method: "PUT", body: f }).then(async (x) => { if (!x.ok) throw new Error((await x.json()).detail); return x.json(); }); }
       catch (e) { toast(`${f.name}: ${e.message}`); }
     }
-    toast("Pictures added"); drawPictures({ ...r, barkWords: $("#barkWords").checked }); Beat.loadMedia();
+    toast("Pictures added"); drawPictures({ ...r, barkWords: $("#barkWords").checked, dayNap: $("#dayNapForm").elements["ui.day_nap"].checked, dayNapBelow: $("#dayNapForm").elements["ui.day_nap_below_dbfs"].value }); Beat.loadMedia();
   }));
   $("#sec-pictures").querySelectorAll("[data-delpic]").forEach((b) => b.addEventListener("click", async () => {
     const r = await api(`/api/media/${b.dataset.delpic.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
-    toast("Picture removed"); drawPictures({ ...r, barkWords: $("#barkWords").checked }); Beat.loadMedia();
+    toast("Picture removed"); drawPictures({ ...r, barkWords: $("#barkWords").checked, dayNap: $("#dayNapForm").elements["ui.day_nap"].checked, dayNapBelow: $("#dayNapForm").elements["ui.day_nap_below_dbfs"].value }); Beat.loadMedia();
   }));
 }
 
 function drawSystem(st) {
   $("#sec-system").innerHTML = `<div class="panel form">
     <h2>System</h2>
+    <div id="micPick"></div>
     <div id="lvl"></div>
     <p class="small muted intro">Live microphone level. Grey is the background noise the Pi has learned; sounds above the dashed line wake the bark detector.</p>
     <div class="two"><dl class="kv" id="detKv"></dl><dl class="kv" id="sysKv"></dl></div>
@@ -839,6 +860,41 @@ function drawSystem(st) {
   </div>`;
   S.settingsInfo = st.info;
   renderSystemLive();
+  drawMics(st.values["audio.device"]);
+}
+
+async function drawMics(configured) {
+  const el = $("#micPick"); if (!el) return;
+  let r;
+  try { r = await api("/api/audio/devices"); } catch (e) { el.innerHTML = ""; return; }
+  const devs = r.devices || [];
+  const isAuto = !configured || configured === "auto";
+  const opts = [`<option value="auto" ${isAuto ? "selected" : ""}>Automatic (first USB webcam or mic)</option>`]
+    .concat(devs.map((d) => `<option value="${esc(d.short)}" ${!isAuto && d.short === configured ? "selected" : ""}>${esc(d.short)}${d.active ? " (in use)" : ""}</option>`))
+    .concat(r.unlisted.map((n) => `<option value="${esc(n)}" ${!isAuto && n === configured ? "selected" : ""}>${esc(n)} (newly plugged in)</option>`));
+  const usable = devs.length + r.unlisted.length;
+  el.innerHTML = `
+    <h3>Microphone</h3>
+    ${r.error && !devs.length ? `<p class="small muted intro">Couldn't list microphones here (${esc(r.error)}).</p>` : `
+    <ul class="miclist">${devs.map((d) => `<li><strong>${esc(d.short)}</strong> <span class="muted">${d.channels} ch, ${Math.round(d.samplerate / 1000)} kHz</span>${d.active ? ' <span class="pill">in use</span>' : ""}</li>`).join("")}${r.unlisted.map((n) => `<li><strong>${esc(n)}</strong> <span class="muted">plugged in after start; select it to switch</span></li>`).join("")}</ul>
+    <div class="microw">
+      <select id="micSel" ${usable < 2 && isAuto ? "disabled" : ""} aria-label="Microphone">${opts.join("")}</select>
+      <button class="btn" id="micUse" type="button" ${usable < 2 && isAuto ? "disabled" : ""}>Use this microphone</button>
+      <button class="btn" id="micRefresh" type="button">Refresh list</button>
+    </div>
+    <p class="small muted intro">${r.current ? `Listening on <strong>${esc(r.current)}</strong>.` : r.listening ? "Opening the microphone…" : "Not listening (started without audio)."}
+      ${usable < 2 ? " Only one microphone is plugged in; plug in another to switch." : ` ${usable} microphones found. Switching takes about a second; an episode in progress is closed first.`}</p>`}`;
+  const use = $("#micUse");
+  if (use) use.onclick = async () => {
+    const v = $("#micSel").value;
+    try {
+      await api("/api/settings", { method: "PUT", body: { values: { "audio.device": v } } });
+      toast(v === "auto" ? "Switching to automatic microphone choice" : `Switching to ${v}`);
+      setTimeout(() => drawMics(v), 1800);
+    } catch (e) { toast(e.message); }
+  };
+  const ref = $("#micRefresh");
+  if (ref) ref.onclick = () => drawMics(configured);
 }
 const FLAG_NAMES = { sustained: "Sustained", quiet_hours: "Quiet hours", frequent: "Frequent day", habitual: "Habitual pattern" };
 
@@ -1068,7 +1124,9 @@ const Beat = (() => {
   // ---- state from the server
   function apply(l) {
     failures = 0; live = l;
-    const room = l.level_db != null ? `room at ${Math.round(l.level_db)} dB` : "";
+    const amb = l.ambient_db ?? l.level_db;
+    const narrow = window.matchMedia("(max-width: 640px)").matches;
+    const bg = amb != null ? `${narrow ? "ambient" : "background noise"} ${Math.round(amb)} dBFS` : "";
     if (l.error && l.state !== "barking") {
       band.dataset.state = "error"; title.textContent = "Microphone problem"; sub.textContent = l.error; show("quiet");
     } else if (l.state === "off") {
@@ -1079,11 +1137,11 @@ const Beat = (() => {
       show("bark");
     } else if (l.mode === "sit") {
       band.dataset.state = "awake"; title.textContent = l.noisy ? "Noisy" : "Listening";
-      sub.textContent = l.noisy ? `Sound but no barking, ${room}` : `Daytime, ${room}`;
+      sub.textContent = l.noisy ? `Sound but no barking, ${bg}` : `Daytime, ${bg}`;
       show("active");
     } else {
       band.dataset.state = "idle"; title.textContent = "Quiet";
-      sub.textContent = l.quiet_hours ? `Quiet hours, ${room}` : room;
+      sub.textContent = l.quiet_hours ? `Quiet hours, ${bg}` : `Calm daytime, ${bg}`;
       show("quiet");
     }
     const started = l.state === "barking" && prevState !== "barking";
@@ -1129,6 +1187,32 @@ const Beat = (() => {
     const a = Math.floor((i * src.length) / n), b = Math.max(a + 1, Math.floor(((i + 1) * src.length) / n));
     let m = 0; for (let k = a; k < b; k++) m = Math.max(m, src[k]); return m;
   }
+  // Bands are log-spaced from 90 Hz to 7.6 kHz across the full width (see features.eq_bands).
+  const HZ_LO = 90, HZ_HI = 7600;
+  const HZ_MARKS = [[100, "100"], [250, "250"], [500, "500"], [1000, "1k"], [2000, "2k"], [4000, "4k"], [7000, "7k Hz"]];
+  function drawHz(W, top, h, css) {
+    const marks = W < 260 ? HZ_MARKS.filter((m) => [250, 1000, 4000].includes(m[0]))
+      : W < 420 ? HZ_MARKS.filter((m) => m[0] !== 100 && m[0] !== 7000) : HZ_MARKS;
+    const fs = h > 15 ? 12 : 10;
+    ctx.font = `500 ${fs}px ${css.fontFamily}`;
+    ctx.fillStyle = css.getPropertyValue("--muted").trim();
+    ctx.textBaseline = "bottom";
+    const y = top + h;
+    let prevRight = -Infinity;
+    for (const [f, text] of marks) {
+      const x = (W * Math.log(f / HZ_LO)) / Math.log(HZ_HI / HZ_LO);
+      const tw = ctx.measureText(text).width;
+      let lx = x - tw / 2;
+      lx = Math.max(0, Math.min(W - tw, lx));
+      if (lx < prevRight + 6) continue;          // skip a label that would collide
+      ctx.textAlign = "left";
+      ctx.fillText(text, lx, y);
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(Math.round(x) - 0.5, top + 1, 1, 3); // small tick under the bars
+      ctx.globalAlpha = 1;
+      prevRight = lx + tw;
+    }
+  }
   function frame(now) {
     const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
     if (!W || !H) { if (!reduce.matches) requestAnimationFrame(frame); return; }
@@ -1138,7 +1222,9 @@ const Beat = (() => {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
     const n = W < 360 ? 14 : W < 640 ? 20 : W < 1100 ? 28 : 36;
     if (bars.length !== n) bars = Array.from({ length: n }, () => ({ h: 0, peak: 0, hold: 0, v: 0 }));
-    const reflect = H > 120, area = reflect ? H * 0.74 : H;
+    // Hz labels sit in a row under the bars; its bottom lines up with the bottom of the picture
+    const LBL = H > 200 ? 18 : H >= 34 ? (H >= 60 ? 14 : 12) : 0;
+    const reflect = H > 200, area = reflect ? (H - LBL) * 0.76 : H - LBL;
     const gapY = area > 120 ? 4 : 3, S = Math.max(4, Math.min(16, Math.floor(area / (area > 120 ? 13 : 11))));
     const segH = (area - gapY * (S - 1)) / S, gapX = W > 600 ? 4 : 3, bw = (W - gapX * (n - 1)) / n;
     const r = Math.min(2.5, segH / 3, bw / 4);
@@ -1168,12 +1254,13 @@ const Beat = (() => {
         ctx.globalAlpha = alpha; ctx.fillStyle = color;
         round(x, y, bw, segH, r);
         if (reflect && (j < lit || j === top)) {
-          const ry = area + gapY * 2 + j * (segH + gapY);
+          const ry = area + LBL + gapY * 2 + j * (segH + gapY);
           if (ry < H) { ctx.globalAlpha = alpha * 0.16 * (1 - j / S); round(x, ry, bw, segH, r); }
         }
       }
     });
     ctx.globalAlpha = 1;
+    if (LBL) drawHz(W, area, LBL, css);
     if (!reduce.matches) requestAnimationFrame(frame);
   }
 
@@ -1191,7 +1278,7 @@ const Beat = (() => {
       if (document.hidden) disconnect(); else { last = performance.now(); connect(); }
     });
   }
-  return { start, loadMedia, spawn, setPrefs };
+  return { start, loadMedia, spawn, setPrefs, latest: () => live };
 })();
 
 // ------------------------------------------------------------- kiosk view

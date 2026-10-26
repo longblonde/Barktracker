@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
+import threading
 import time
 import wave
 from typing import Iterator
@@ -36,10 +38,39 @@ def list_devices() -> str:
     return str(sd.query_devices())
 
 
+def short_name(name: str) -> str:
+    """Device name without the ALSA card/device numbers, which can change between reboots."""
+    return re.sub(r"\s*\(hw:\d+,\s*\d+\)\s*$", "", name or "").strip()
+
+
+def list_inputs() -> dict:
+    """Input devices PortAudio knows about, plus any USB sound cards plugged in since it started."""
+    out = {"devices": [], "unlisted": [], "error": None}
+    try:
+        import sounddevice as sd
+        for i, d in enumerate(sd.query_devices()):
+            if d["max_input_channels"] > 0:
+                out["devices"].append({"index": i, "name": d["name"], "short": short_name(d["name"]),
+                                       "channels": int(d["max_input_channels"]),
+                                       "samplerate": int(d["default_samplerate"])})
+    except Exception as e:  # noqa: BLE001 - no PortAudio (tests, non-Linux dev machines)
+        out["error"] = f"{type(e).__name__}: {e}"
+    try:
+        with open("/proc/asound/cards") as fh:
+            cards = re.findall(r"^\s*\d+\s+\[[^\]]*\]:\s*[^-]*-\s*(.+)$", fh.read(), re.M)
+        known = " ".join(d["name"].lower() for d in out["devices"])
+        out["unlisted"] = [c.strip() for c in cards if c.strip().lower()[:12] not in known
+                           and "bcm2835" not in c.lower() and "hdmi" not in c.lower()]
+    except OSError:
+        pass
+    return out
+
+
 class MicSource:
     def __init__(self, device="auto", samplerate: int = 16000, channels: int = 0,
                  block_seconds: float = 0.05, gain_db: float = 0.0):
         self.device = device
+        self._want_sr, self._want_ch = samplerate, channels
         self.sr = samplerate
         self.channels = channels
         self.block_seconds = block_seconds
@@ -48,6 +79,14 @@ class MicSource:
         self.q: queue.Queue = queue.Queue(maxsize=2000)
         self.overflows = 0
         self.device_name = None
+        self._restart = threading.Event()
+        self._rescan = False
+
+    def switch(self, device) -> None:
+        """Move to another input: the open stream closes and reopens on `device` within ~0.5 s."""
+        self.device = device or "auto"
+        self._rescan = True          # re-read the device list so a newly plugged-in mic is found
+        self._restart.set()
 
     # Names USB webcams/mics show up as in ALSA, best first (Logitech C920/C922/C930e/Brio, etc.)
     AUTO_PATTERNS = ("c920", "c922", "c930", "brio", "logitech", "webcam", "camera", "usb")
@@ -83,6 +122,16 @@ class MicSource:
             except queue.Full:
                 self.overflows += 1
 
+        if self._rescan:
+            try:                     # PortAudio only lists devices present when it started
+                sd._terminate()
+                sd._initialize()
+            except Exception:  # noqa: BLE001
+                log.debug("PortAudio re-scan failed", exc_info=True)
+            self._rescan = False
+        self._restart.clear()
+        self.sr, self.channels = self._want_sr, self._want_ch
+        self.block = int(self.sr * self.block_seconds)
         dev = self._resolve_device()
         info = sd.query_devices(dev, "input")
         self.device_name = info.get("name", "default")
@@ -98,11 +147,17 @@ class MicSource:
         log.info("Opening input %s (%d ch) @ %d Hz", self.device_name, self.channels, self.sr)
         with sd.InputStream(device=dev, samplerate=self.sr, channels=self.channels, dtype="float32",
                             blocksize=self.block, callback=cb):
-            while True:
-                data, ts = self.q.get()
+            while not self._restart.is_set():
+                try:
+                    data, ts = self.q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
                 x = data.mean(axis=1) if data.ndim > 1 else data
                 x = F.resample(x * self.gain, self.sr) if self.sr != F.SR else x * self.gain
                 yield x.astype(np.float32), ts
+        while not self.q.empty():        # switching inputs: drop audio from the old one
+            self.q.get_nowait()
+        log.info("Input stream closed (switching microphone)")
 
 
 class FileSource:

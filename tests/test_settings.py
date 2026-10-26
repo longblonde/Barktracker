@@ -111,7 +111,38 @@ def test_mode_nap_sit_bark(tmp_path):
     assert lm.snapshot(det, now=night + 10.5)["mode"] == "bark"  # barking switches at once
     det.last_bark_wall, det.history = 0, [(0, -60.0, -60.0)] * 20
     lm2 = LiveMode(cfg, app.store)
-    assert lm2.snapshot(det, now=day)["mode"] == "sit"           # quiet daytime
+    assert lm2.snapshot(det, now=day)["mode"] == "nap"           # daytime, background below -50 dBFS
+    det.history = [(0, -45.0, -45.0)] * 20                        # daytime with steady background noise
+    lm3 = LiveMode(cfg, app.store)
+    snap = lm3.snapshot(det, now=day)
+    assert snap["mode"] == "sit" and snap["ambient_db"] == -45.0 and not snap["noisy"]
+    cfg.ui.day_nap = False                                        # setting off: quiet daytime is "sit"
+    det.history = [(0, -60.0, -60.0)] * 20
+    assert LiveMode(cfg, app.store).snapshot(det, now=day)["mode"] == "sit"
+    app.shutdown()
+
+
+def test_microphone_list_and_switch(tmp_path, monkeypatch):
+    import sys, types
+    cfg, app, c = make(tmp_path)
+    sd = types.ModuleType("sounddevice")
+    sd.query_devices = lambda *a, **k: [
+        {"name": "bcm2835 Headphones", "max_input_channels": 0, "default_samplerate": 44100.0},
+        {"name": "HD Pro Webcam C920: USB Audio (hw:2,0)", "max_input_channels": 2, "default_samplerate": 32000.0},
+        {"name": "USB PnP Sound Device: Audio (hw:3,0)", "max_input_channels": 1, "default_samplerate": 48000.0}]
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+
+    class FakeMic:
+        device_name, device, gain, switched = "HD Pro Webcam C920: USB Audio (hw:2,0)", "auto", 1.0, None
+        def switch(self, d): self.switched = d
+    app.source = FakeMic()
+    r = c.get("/api/audio/devices").json()
+    assert [d["short"] for d in r["devices"]] == ["HD Pro Webcam C920: USB Audio", "USB PnP Sound Device: Audio"]
+    assert [d["active"] for d in r["devices"]] == [True, False]
+    c.put("/api/settings", json={"values": {"audio.device": "USB PnP Sound Device: Audio"}})
+    assert app.source.switched == "USB PnP Sound Device: Audio" and cfg.audio.device == "USB PnP Sound Device: Audio"
+    c.put("/api/settings", json={"values": {"audio.device": ""}})
+    assert app.source.switched == "auto"
     app.shutdown()
 
 

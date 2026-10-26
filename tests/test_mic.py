@@ -53,3 +53,24 @@ def test_mic_falls_back_to_native_rate_and_resamples(monkeypatch):
         assert x.dtype == np.float32
         assert abs(len(x) - 0.05 * F.SR) <= 1     # 50 ms at 16 kHz after resampling
     assert chunks[-1][1] >= chunks[0][1]
+
+
+def test_mic_switches_device_without_restart(monkeypatch):
+    sd = fake_sd()
+    opened = []
+    real = sd.InputStream
+    class Tracking(real):
+        def __init__(self, *a, device=None, **k):
+            opened.append(device)
+            super().__init__(*a, **k)
+    sd.InputStream = Tracking
+    sd._terminate = sd._initialize = lambda: None
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    src = MicSource(device="auto", samplerate=16000)
+    it = iter(src)
+    next(it)
+    src.switch(1)
+    rest = list(it)                       # the stream closes and this pass of the iterator ends
+    assert len(rest) < 40 and src.device == 1
+    next(iter(src))                       # the next pass opens the new device
+    assert opened == [1, 1] or opened[-1] == 1

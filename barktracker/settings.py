@@ -42,6 +42,9 @@ SPECS = {s.key: s for s in [
     Spec("notify.webhook_url", "str"),
     Spec("notify.min_duration", "float", 0, 86400),
     Spec("ui.bark_words", "bool"),
+    Spec("ui.day_nap", "bool"),
+    Spec("ui.day_nap_below_dbfs", "float", -90, -10),
+    Spec("audio.device", "device"),
 ]}
 
 
@@ -63,6 +66,9 @@ def coerce(key: str, value):
         if isinstance(value, str):
             return value.lower() in ("1", "true", "yes", "on")
         return bool(value)
+    if s.kind == "device":
+        v = str(value or "").strip()
+        return v or "auto"
     if s.kind == "str":
         v = (value or "").strip()
         if key == "notify.webhook_url" and v and not v.startswith(("http://", "https://")):
