@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 FRAME = int(0.05 * F.SR)          # 800 samples
 PRE_ONSET = int(0.25 * F.SR)      # classifier window starts this long before the onset
 POST_ONSET = WINDOW - PRE_ONSET   # ...and needs this much audio after it
+ALT_SHIFT = int(0.2 * F.SR)       # second try with the attack placed later in the window
 
 
 @dataclass
@@ -177,6 +178,12 @@ class BarkDetector:
         win = self._audio(onset - PRE_ONSET, onset + POST_ONSET)
         t0 = time.perf_counter()
         prob, detail = self.classifier.bark_probability(win)
+        if prob < self.det.bark_threshold:
+            # the model is sensitive to where the bark sits in its window: try it a little later
+            alt = self._audio(onset - PRE_ONSET - ALT_SHIFT, onset + POST_ONSET - ALT_SHIFT)
+            p2, d2 = self.classifier.bark_probability(alt)
+            if p2 > prob:
+                prob, detail = p2, d2
         self.last_classify_ms = (time.perf_counter() - t0) * 1000
         self.last_prob, self.last_detail = prob, detail
         self.stats["classified"] += 1

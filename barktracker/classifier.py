@@ -34,6 +34,11 @@ class Classifier:
         """x: 16 kHz mono float32 ~1 s window. Returns (p_bark 0-1, details)."""
         raise NotImplementedError
 
+    def dog_scores(self, x: np.ndarray) -> tuple[float, float]:
+        """(p_bark, dogness): dogness is the chance the sound is any dog sound at all."""
+        p, _ = self.bark_probability(x)
+        return p, p
+
 
 def _load_interpreter(model_path: str):
     try:
@@ -64,6 +69,8 @@ class YamnetClassifier(Classifier):
                 self.dog_idx[labels.index(name)] = (name, w)
             elif name in FALLBACK_INDEX:
                 self.dog_idx[FALLBACK_INDEX[name]] = (name, w)
+        any_names = set(DOG_LABELS) | {"Domestic animals, pets"}
+        self.dog_any = [i for i, n in enumerate(labels or []) if n in any_names] or list(self.dog_idx)
         log.info("YAMNet loaded (%s), dog classes: %s", model_path,
                  sorted(n for n, _ in self.dog_idx.values()))
 
@@ -90,6 +97,12 @@ class YamnetClassifier(Classifier):
         self.interp.set_tensor(self.in_idx, x)
         self.interp.invoke()
         return np.asarray(self.interp.get_tensor(self.out_idx)).reshape(-1)
+
+    def dog_scores(self, x):
+        s = self.scores(x)
+        weighted = [float(s[i]) * w for i, (_, w) in self.dog_idx.items()]
+        dogness = 1.0 - float(np.prod([1.0 - float(s[i]) for i in self.dog_any]))
+        return float(min(1.0, max(weighted) if weighted else 0.0)), dogness
 
     def bark_probability(self, x):
         s = self.scores(x)

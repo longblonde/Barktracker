@@ -94,3 +94,66 @@ def test_refine_drops_non_barks_between_barks(tmp_path):
     ep, _ = offsets(store)
     refine_episode(store, ep["id"], HeuristicClassifier(), None, cfg.detection.bark_threshold)
     assert store.q1("SELECT bark_count n FROM episodes")["n"] == 3
+
+
+class UnsureModel:
+    """Stands in for YAMNet on distant barks over road noise: the first bark it hears is a sure
+    bark, later barks score low as "bark" but still clearly as "dog", and noise is nothing."""
+    name = "unsure"
+
+    def __init__(self):
+        self.first_on = None
+
+    def dog_scores(self, x):
+        e = F.band_envelope(x)
+        if e.max() < np.median(e) + 10:
+            return 0.0, 0.0
+        sig = round(float(np.abs(x).sum()), 1)        # identifies which sound is being judged
+        if self.first_on is None:
+            self.first_on = sig
+        return (0.6, 0.97) if sig == self.first_on else (0.12, 0.6)
+
+    def bark_probability(self, x):
+        return self.dog_scores(x)[0], {}
+
+
+def write_clip(cfg, x):
+    from pathlib import Path
+    from barktracker.clips import ClipWriter
+    path = Path(cfg.data_dir) / "clip.wav"
+    w = ClipWriter(path, 60)
+    w.write(x)
+    w.close()
+    return str(path)
+
+
+def test_refine_counts_unsure_barks_of_a_confirmed_episode(tmp_path):
+    from barktracker.refine import refine_episode
+    truth = [2.0, 2.7, 3.5, 4.3, 5.4, 6.1]
+    x = synth.scene([(t, "Big dog") for t in truth], 9.0, noise_db=-45, seed=11)
+    cfg = Config(data_dir=str(tmp_path))
+    store = Store(cfg.db_path)
+    eid = store.create_episode(T0 + 2.0, write_clip(cfg, x), T0)
+    store.add_bark(eid, T0 + 2.0, 0.2, 0.6, -10, None)          # live caught only the first
+    store.finish_episode(eid, T0 + 6.4, 1, -10, 0.6, 9.0)
+    refine_episode(store, eid, UnsureModel(), None, 0.35)
+    got = [b["ts"] - T0 for b in store.barks_for(eid)]
+    assert len(got) == len(truth)
+    for g, t in zip(got, truth):
+        assert abs(g - t) < 0.05
+
+
+def test_refine_merges_quiet_tail_into_the_bark(tmp_path):
+    from barktracker.refine import refine_episode
+    rng = np.random.default_rng(2)
+    x = synth.scene([(2.0, "Big dog"), (3.4, "Big dog")], 6.0, noise_db=-60, seed=5)
+    tail = synth.bark(330, 0.6, 0.2, 0.2, rng) * 0.02             # a quiet echo right after bark 1
+    i = int(2.37 * F.SR); x[i:i + len(tail)] += tail
+    cfg = Config(data_dir=str(tmp_path))
+    store = Store(cfg.db_path)
+    eid = store.create_episode(T0 + 2.0, write_clip(cfg, x), T0)
+    store.add_bark(eid, T0 + 2.0, 0.2, 0.9, -10, None)
+    store.finish_episode(eid, T0 + 3.7, 1, -10, 0.9, 6.0)
+    refine_episode(store, eid, HeuristicClassifier(), None, 0.35)
+    got = [round(b["ts"] - T0, 2) for b in store.barks_for(eid)]
+    assert len(got) == 2 and abs(got[0] - 2.0) < 0.05 and abs(got[1] - 3.4) < 0.05
