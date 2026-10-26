@@ -44,7 +44,8 @@ class BarkApp:
             if cfg.detection.refine:
                 self._spawn(self._refine_loop, "refine")
                 self.queue_unrefined()
-        self._spawn(self._maintenance_loop, "maintenance")
+        if start_detector:          # only the running service prunes clips (not one-off commands)
+            self._spawn(self._maintenance_loop, "maintenance")
 
     def _spawn(self, fn, name):
         t = threading.Thread(target=fn, name=name, daemon=True)
