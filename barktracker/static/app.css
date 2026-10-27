@@ -401,3 +401,24 @@ body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width
 .miclist { list-style: none; margin: 4px 0 10px; padding: 0; display: grid; gap: 4px; font-size: 14px; }
 .miclist .pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--faint); color: var(--ink); }
 .microw + p { margin-top: 8px; }
+
+/* ---- backup ---- */
+.bk-state { margin: 4px 0 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--faint); font-size: 14px; }
+.bk-state.good { border-left: 3px solid var(--ok, #3fb68b); }
+.bk-state.bad, .help.bad { color: var(--danger); }
+.bk-state.bad { border-left: 3px solid var(--danger); }
+.bk-state.busy { border-left: 3px solid var(--caution); }
+.bk-path { display: flex; gap: 8px; align-items: center; width: 100%; max-width: 40em; }
+.bk-path input { flex: 1 1 auto; min-width: 0; }
+.bk-drives { margin: 4px 0 8px; padding-left: 18px; display: grid; gap: 2px; }
+.linkish { background: none; border: 0; padding: 0; color: var(--ink); text-decoration: underline; cursor: pointer; font: inherit; }
+.bk-h { margin: 24px 0 4px; padding-top: 16px; border-top: 1px solid var(--faint); }
+.bk-restore { display: grid; gap: 10px; }
+.bk-found { display: grid; gap: 6px; }
+.bk-snap { align-items: flex-start; }
+.bk-upload summary { cursor: pointer; color: var(--muted); }
+.bk-upload .row { margin-top: 8px; flex-wrap: wrap; }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--rule)); }
+.bk-confirm { flex-wrap: wrap; align-items: center; gap: 8px; }
+.bk-confirm input[type="text"] { width: 12em; flex: 0 0 auto; }
+.bk-confirm input[type="file"] { flex: 0 1 auto; }

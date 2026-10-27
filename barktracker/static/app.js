@@ -621,7 +621,7 @@ function voiceBlock(d) {
 
 // --------------------------------------------------------------- settings
 const SETTINGS_SECTIONS = [
-  ["detection", "Detection"], ["storage", "Storage"], ["code", "Code parameters"], ["ordinance", "Ordinance and contacts"],
+  ["detection", "Detection"], ["storage", "Storage"], ["backup", "Backup and restore"], ["code", "Code parameters"], ["ordinance", "Ordinance and contacts"],
   ["pictures", "Live band"], ["notify", "Alerts and dog matching"], ["system", "System"],
 ];
 async function renderSettings() {
@@ -632,7 +632,7 @@ async function renderSettings() {
     <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}">${t}</a>`).join("")}</nav>
     ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}
     <footer class="version">Barktracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
-  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures({ ...media, barkWords: st.values["ui.bark_words"] !== false, dayNap: st.values["ui.day_nap"] !== false, dayNapBelow: st.values["ui.day_nap_below_dbfs"] }); drawNotify(st); drawSystem(st);
+  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures({ ...media, barkWords: st.values["ui.bark_words"] !== false, dayNap: st.values["ui.day_nap"] !== false, dayNapBelow: st.values["ui.day_nap_below_dbfs"] }); drawNotify(st); drawSystem(st); drawBackup();
   if (route.arg) $(`#sec-${route.arg}`)?.scrollIntoView();
 }
 
@@ -698,6 +698,156 @@ function drawStorage(st) {
       vals["clips.max_clip_seconds"] = Number(vals["clips.max_clip_seconds"]) * 60;
       await saveApp(vals, "Storage settings saved");
     });
+}
+
+// backup to a USB drive + restore ---------------------------------------------------
+const fmtWhen = (ts) => ts ? `${fmtDay(ts)}, ${fmtTime(ts)}` : "never";
+const gbs = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+
+async function drawBackup() {
+  const el = $("#sec-backup"); if (!el) return;
+  let b;
+  try { b = await api("/api/backup"); } catch (e) { el.innerHTML = `<div class="panel"><h2>Backup and restore</h2><p class="notice">${esc(e.message)}</p></div>`; return; }
+  const v = b.settings, last = b.last || {}, res = last.last_result;
+  const run = b.running, rest = b.restore;
+  let state;
+  if (b.restart_pending || b.pending_restore) state = `<div class="notice">A restore is staged${b.pending_restore ? ` (${esc(b.pending_restore.snapshot)})` : ""}. ${b.restart_pending ? "Barktracker is restarting to finish it…" : "Restart Barktracker to finish: <code>sudo systemctl restart barktracker</code>"}</div>`;
+  else if (run) state = `<p class="bk-state busy">Backing up: ${esc(run.step)}${run.total ? ` (${run.done} of ${run.total})` : ""}…</p>`;
+  else if (!v["backup.path"]) state = `<p class="bk-state">No backup drive set yet. Your log, labels and recordings live only on the SD card.</p>`;
+  else if (last.last_error) state = `<p class="bk-state bad"><strong>Last backup failed</strong> ${fmtWhen(last.last_try)}: ${esc(last.last_error)}</p>`;
+  else if (last.last_ok) state = `<p class="bk-state good"><strong>Backed up</strong> ${fmtWhen(last.last_ok)}${res ? `: ${res.episodes} episodes, ${res.labelled_barks} labelled barks, ${res.clip_files} recordings (${gbs(res.clips_mb)})` : ""}.${b.enabled && b.next_due ? ` Next one ${fmtWhen(Math.max(b.next_due, Date.now() / 1000))}.` : ""}</p>`;
+  else state = `<p class="bk-state">Not backed up yet.${b.target.ok ? " The first backup runs within a few minutes, or press Back up now." : ""}</p>`;
+  const lr = b.last_restore;
+  const drives = (b.drives || []).map((d) => `<li><button type="button" class="linkish" data-path="${esc(d.path)}">${esc(d.path)}</button> <span class="muted">${esc(d.label || d.device)}, ${esc(d.fs)}, ${gbs(d.free_mb)} free of ${gbs(d.total_mb)}${d.same_disk ? ", same disk as the SD card" : ""}${d.has_backup ? ", has a Barktracker backup" : ""}</span></li>`).join("");
+
+  el.innerHTML = `<div class="panel form">
+    <h2>Backup and restore</h2>
+    <p class="small muted intro">Copies the log database (episodes, barks, dogs, your labels and all the training data behind them, settings, ordinance and contacts), the recordings and your pictures to a USB drive. If the SD card fails, restore the drive onto a fresh install and nothing is lost.</p>
+    <div id="bkState">${state}</div>
+    ${lr ? `<p class="small muted">Restored from ${esc(lr.snapshot)} on ${fmtWhen(lr.applied)}${lr.previous ? `; the database it replaced is kept in <code>${esc(lr.previous)}</code>` : ""}.</p>` : ""}
+    <form id="bkForm" class="bk-form">
+      <label>Backup folder on the USB drive
+        <span class="bk-path"><input type="text" name="backup.path" value="${esc(v["backup.path"] || "")}" placeholder="/mnt/barktracker-backup" autocomplete="off" spellcheck="false"><button type="button" class="btn" id="bkCheck">Check</button></span>
+        <span class="help" id="bkCheckOut">${v["backup.path"] ? (b.target.ok ? `Drive OK, ${gbs(b.target.free_mb)} free.` : esc(b.target.reason)) : "The drive's mount point. See the README for setting up a USB drive on the Pi."}</span></label>
+      ${drives ? `<div class="small"><span class="muted">Drives plugged in:</span><ul class="bk-drives">${drives}</ul></div>` : `<p class="small muted">No USB drives are mounted right now.</p>`}
+      <div class="grid3">
+        ${fieldNum("backup.interval_hours", "Back up every", v["backup.interval_hours"], { unit: "hours", min: 1, max: 720 })}
+        ${fieldNum("backup.keep", "Database copies to keep", v["backup.keep"], { unit: "copies", min: 1, max: 90, help: "Older copies let you go back before a mistake." })}
+      </div>
+      ${fieldCheck("backup.enabled", "Back up automatically", v["backup.enabled"])}
+      ${fieldCheck("backup.include_clips", "Include the recordings", v["backup.include_clips"], "Recordings the clip retention rules delete are removed from the drive too.")}
+      <div class="row spread"><button class="btn primary" type="submit">Save backup settings</button>
+        <span class="row"><button class="btn" type="button" id="bkNow" ${(b.target.ok || b.target.unmounted) && !run ? "" : "disabled"}>Back up now</button>
+        <button class="btn" type="button" id="bkEject" ${b.target.ok && !run ? "" : "disabled"}>Safely remove drive</button>
+        <a class="btn" href="/api/backup/database.db" download>Download database</a></span></div>
+    </form>
+
+    <h3 class="bk-h">Restore</h3>
+    <p class="small muted intro">On a new Pi: install Barktracker, plug in the backup drive, then restore here. This replaces the current log with the backup's; the current database is kept in the data folder in case you need it.</p>
+    <div class="bk-restore">
+      <span class="bk-path"><input type="text" id="rsPath" value="${esc(v["backup.path"] || (b.drives || []).find((d) => d.has_backup)?.path || "")}" placeholder="/mnt/barktracker-backup" spellcheck="false"><button type="button" class="btn" id="rsFind">Look for backups</button></span>
+      <div id="rsOut">${rest?.error ? `<p class="bk-state bad">${esc(rest.error)}</p>` : rest ? `<p class="bk-state busy">Restoring: ${esc(rest.step)}${rest.total ? ` (${rest.done} of ${rest.total})` : ""}…</p>` : ""}</div>
+      <details class="bk-upload"><summary class="small">Restore from a downloaded database file instead (no recordings)</summary>
+        <div class="row bk-confirm"><input type="file" id="rsFile" accept=".db,application/vnd.sqlite3"><input type="text" id="rsFileConfirm" placeholder="Type RESTORE" aria-label="Type RESTORE to confirm"><button type="button" class="btn" id="rsUpload">Restore file</button></div>
+      </details>
+    </div>
+  </div>`;
+
+  const form = $("#bkForm");
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const vals = {};
+    for (const inp of form.querySelectorAll("input[name]")) vals[inp.name] = inp.type === "checkbox" ? inp.checked : inp.value;
+    try { await api("/api/settings", { method: "PUT", body: { values: vals } }); toast("Backup settings saved"); drawBackup(); }
+    catch (e) { toast(e.message); }
+  };
+  const check = async () => {
+    const out = $("#bkCheckOut");
+    const r = await api("/api/backup/check", { method: "POST", body: { path: form.elements["backup.path"].value } });
+    out.textContent = r.ok ? `Drive OK, ${gbs(r.free_mb)} free. Save to use it.` : r.reason;
+    out.classList.toggle("bad", !r.ok);
+  };
+  $("#bkCheck").onclick = () => check().catch((e) => toast(e.message));
+  el.querySelectorAll(".bk-drives [data-path]").forEach((btn) => btn.onclick = () => {
+    form.elements["backup.path"].value = btn.dataset.path;
+    $("#rsPath").value = btn.dataset.path;
+    check().catch(() => {});
+  });
+  $("#bkNow").onclick = async () => {
+    try { await api("/api/backup/run", { method: "POST" }); toast("Backup started"); drawBackup(); } catch (e) { toast(e.message); }
+  };
+  $("#bkEject").onclick = async () => {
+    try { const r = await api("/api/backup/eject", { method: "POST" }); toast(r.reason); drawBackup(); } catch (e) { toast(e.message); }
+  };
+  $("#rsFind").onclick = () => findBackups().catch((e) => { $("#rsOut").innerHTML = `<p class="bk-state bad">${esc(e.message)}</p>`; });
+  $("#rsUpload").onclick = async () => {
+    const f = $("#rsFile").files[0];
+    if (!f) return toast("Choose a .db file first");
+    if ($("#rsFileConfirm").value.trim() !== "RESTORE") return toast("Type RESTORE to confirm");
+    try {
+      const r = await fetch("/api/backup/restore-upload?confirm=RESTORE", { method: "PUT", body: f, headers: { "Content-Type": "application/octet-stream" } });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      const out = await r.json();
+      toast(`Staged ${out.episodes} episodes`);
+      waitForRestart(out.restarting);
+    } catch (e) { toast(e.message); }
+  };
+  if (run || (rest && !rest.error && !b.restart_pending)) pollBackup();
+  else if (b.restart_pending) waitForRestart(true);
+}
+
+async function findBackups() {
+  const path = $("#rsPath").value.trim();
+  const info = await api("/api/backup/inspect", { method: "POST", body: { path } });
+  const snaps = info.snapshots.map((s, i) => `<label class="check bk-snap"><input type="radio" name="rsSnap" value="${esc(s.name)}" ${i === 0 && !s.error ? "checked" : ""} ${s.error ? "disabled" : ""}>
+      <span><strong>${fmtWhen(s.ts)}</strong> ${s.error ? `<span class="bad">${esc(s.error)}</span>` : `<span class="muted">${s.episodes} episodes${s.first_ts ? ` from ${fmtDay(s.first_ts)}` : ""}, ${s.dogs} dog${s.dogs === 1 ? "" : "s"}, ${s.labelled_barks} labelled barks, ${s.clips} recordings, ${s.mb} MB</span>`}</span></label>`).join("");
+  $("#rsOut").innerHTML = `<div class="bk-found">
+    <p class="small">Backup from <strong>${esc(info.hostname || "another Pi")}</strong>${info.version ? ` (Barktracker ${esc(info.version)})` : ""}, ${info.clip_files} recordings (${gbs(info.clips_mb)}). Choose a copy:</p>
+    ${snaps}
+    <label class="check"><input type="checkbox" id="rsClips" ${info.clip_files ? "checked" : "disabled"}> Copy the recordings to this Pi too</label>
+    <div class="row bk-confirm"><input type="text" id="rsConfirm" placeholder="Type RESTORE" aria-label="Type RESTORE to confirm"><button type="button" class="btn danger" id="rsGo">Restore and restart</button></div>
+  </div>`;
+  $("#rsGo").onclick = async () => {
+    if ($("#rsConfirm").value.trim() !== "RESTORE") return toast("Type RESTORE to confirm");
+    const snap = $('input[name="rsSnap"]:checked')?.value;
+    try {
+      await api("/api/backup/restore", { method: "POST", body: { path: info.root, snapshot: snap, include_clips: $("#rsClips").checked, confirm: "RESTORE" } });
+      pollBackup();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+function pollBackup() {
+  clearTimeout(S.bkTimer);
+  S.bkTimer = setTimeout(async () => {
+    if (!$("#sec-backup")) return;
+    try {
+      const b = await api("/api/backup");
+      if (b.restart_pending) { drawBackup(); return; }
+      if (b.running || (b.restore && !b.restore.error)) {
+        const msg = b.running ? `Backing up: ${b.running.step}${b.running.total ? ` (${b.running.done} of ${b.running.total})` : ""}…`
+          : `Restoring: ${b.restore.step}${b.restore.total ? ` (${b.restore.done} of ${b.restore.total})` : ""}…`;
+        const st = b.running ? $("#bkState") : $("#rsOut");
+        if (st) st.innerHTML = `<p class="bk-state busy">${esc(msg)}</p>`;
+        pollBackup();
+      } else drawBackup();
+    } catch (_) { drawBackup(); }
+  }, 1000);
+}
+
+function waitForRestart(restarting) {
+  const out = $("#rsOut");
+  if (!restarting) { drawBackup(); return; }
+  if (out) out.innerHTML = `<p class="bk-state busy">Restarting Barktracker with the restored data…</p>`;
+  let wentDown = false;
+  const tick = async () => {
+    try {
+      await api("/api/status");
+      if (wentDown) { location.hash = "#/settings/backup"; location.reload(); return; }
+    } catch (_) { wentDown = true; }
+    setTimeout(tick, 1500);
+  };
+  setTimeout(tick, 1500);
 }
 
 function drawDetection(st) {

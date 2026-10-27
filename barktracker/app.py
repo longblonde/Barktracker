@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -14,6 +15,7 @@ from .clips import enforce_retention
 from .config import Config
 from .detector import BarkDetector, run_source
 from .identify import DogIdentifier, retrain_and_repredict
+from . import backup as backup_mod
 from . import settings as settings_mod
 from .storage import Store
 
@@ -24,8 +26,13 @@ class BarkApp:
     def __init__(self, cfg: Config, source=None, start_detector: bool = True):
         self.cfg = cfg
         cfg.clips_path.mkdir(parents=True, exist_ok=True)
+        restored = backup_mod.apply_pending_restore(cfg)          # a restore staged before the restart
         self.store = Store(cfg.db_path)
+        if restored:
+            self.store.set_meta("last_restore", restored)
         self.defaults = settings_mod.apply_saved(cfg, self.store)   # dashboard overrides
+        self.backup = backup_mod.Backup(cfg, self.store, getattr(cfg, "source_file", None))
+        self.restart_pending = False
         self.recover()
         ic = cfg.identify
         self.identifier = DogIdentifier(ic.k, ic.min_labels_per_dog, ic.min_confidence) if ic.enabled else None
@@ -47,8 +54,9 @@ class BarkApp:
             if cfg.detection.refine:
                 self._spawn(self._refine_loop, "refine")
                 self.queue_unrefined()
-        if start_detector:          # only the running service prunes clips (not one-off commands)
+        if start_detector:          # only the running service prunes clips and backs up (not one-off commands)
             self._spawn(self._maintenance_loop, "maintenance")
+            self._spawn(self._backup_loop, "backup")
 
     def _spawn(self, fn, name):
         t = threading.Thread(target=fn, name=name, daemon=True)
@@ -110,6 +118,39 @@ class BarkApp:
             except Exception:  # noqa: BLE001
                 log.exception("Retention failed")
             self.stop.wait(3600)
+
+    def _backup_loop(self):
+        self.stop.wait(60)                     # let startup (and a restore's re-scan) settle first
+        while not self.stop.is_set():
+            if self.backup.due():
+                try:
+                    self.backup.run("scheduled")
+                except backup_mod.BackupError:
+                    pass                           # recorded in the backup status for the dashboard
+            self.stop.wait(300)
+
+    def backup_now(self) -> None:
+        def go():
+            try:
+                self.backup.run("manual")
+            except backup_mod.BackupError:
+                pass
+        threading.Thread(target=go, name="backup-now", daemon=True).start()
+
+    def restart(self) -> bool:
+        """Restart the service so a staged restore takes effect. Under systemd (Restart=always) the
+        process just exits and comes back in a few seconds; otherwise it asks you to restart."""
+        self.restart_pending = True
+        if not os.environ.get("INVOCATION_ID"):      # not started by systemd
+            log.warning("Restore staged: restart Barktracker to finish")
+            return False
+
+        def go():
+            time.sleep(1.0)                        # let the HTTP response go out
+            self.shutdown()
+            os._exit(0)
+        threading.Thread(target=go, daemon=True).start()
+        return True
 
     def update_settings(self, changes: dict) -> list[str]:
         changed = settings_mod.update(self.cfg, self.store, changes, self.defaults)

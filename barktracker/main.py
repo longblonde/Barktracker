@@ -107,6 +107,48 @@ def cmd_level(args, cfg):
             acc = []
 
 
+def cmd_backup(args, cfg):
+    """Back up now to backup.path (or --to)."""
+    from .app import BarkApp
+    from .backup import BackupError
+    bark = BarkApp(cfg, None, start_detector=False)
+    if args.to:
+        cfg.backup.path = args.to
+    try:
+        print(bark.backup.run("command line"))
+    except BackupError as e:
+        sys.exit(f"Backup failed: {e}")
+
+
+def cmd_restore(args, cfg):
+    """Restore a backup (e.g. from the USB drive) onto this install."""
+    from .app import BarkApp
+    from .backup import BackupError, inspect
+    try:
+        info = inspect(args.path)
+    except BackupError as e:
+        sys.exit(str(e))
+    print(f"Backup in {info['root']} from {info.get('hostname') or 'unknown Pi'}: "
+          f"{info['clip_files']} recordings ({info['clips_mb']:.0f} MB)")
+    for s_ in info["snapshots"]:
+        when = datetime.fromtimestamp(s_["ts"]).strftime("%Y-%m-%d %H:%M")
+        print(f"  {s_['name']}  {when}  " + (s_["error"] if "error" in s_ else
+              f"{s_['episodes']} episodes, {s_['labelled_barks']} labelled barks, {s_['dogs']} dogs"))
+    snap = args.snapshot or info["snapshots"][0]["name"]
+    if not args.yes:
+        ans = input(f"Replace this install's log with {snap}? The current database is kept in "
+                    f"{cfg.data_path}/pre-restore-*/  [type yes] ")
+        if ans.strip().lower() != "yes":
+            sys.exit("Nothing changed")
+    bark = BarkApp(cfg, None, start_detector=False)
+    try:
+        out = bark.backup.stage_restore(info["root"], snap, include_clips=not args.no_clips)
+    except BackupError as e:
+        sys.exit(f"Restore failed: {e}")
+    print(f"Staged {snap} ({out['clips_copied']} recordings copied).")
+    print("Start (or restart) the service to finish:  sudo systemctl restart barktracker")
+
+
 def cmd_demo(args, cfg):
     """Fill the database with ~2 weeks of synthetic barking from two dogs, run through the real
     detector, so you can try the dashboard before the Pi has heard anything."""
@@ -205,6 +247,16 @@ def main(argv=None):
     i.add_argument("file")
     i.add_argument("--start", help="recording start time, e.g. 2026-10-24T08:00")
     i.set_defaults(fn=cmd_ingest)
+
+    b = sub.add_parser("backup", help="back up the log and recordings to the USB drive now")
+    b.add_argument("--to", help="backup folder (default: backup.path from settings)")
+    b.set_defaults(fn=cmd_backup)
+    rs = sub.add_parser("restore", help="restore a backup onto this install (e.g. a new Pi)")
+    rs.add_argument("path", help="the USB drive's folder, e.g. /mnt/barktracker-backup")
+    rs.add_argument("--snapshot", help="which database snapshot (default: newest)")
+    rs.add_argument("--no-clips", action="store_true", help="restore the log only, not the recordings")
+    rs.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+    rs.set_defaults(fn=cmd_restore)
 
     d = sub.add_parser("demo", help="generate synthetic demo data")
     d.add_argument("--days", type=int, default=14)

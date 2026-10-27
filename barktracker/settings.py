@@ -45,6 +45,11 @@ SPECS = {s.key: s for s in [
     Spec("ui.day_nap", "bool"),
     Spec("ui.day_nap_below_dbfs", "float", -90, -10),
     Spec("audio.device", "device"),
+    Spec("backup.path", "path"),
+    Spec("backup.enabled", "bool"),
+    Spec("backup.interval_hours", "float", 1, 720),
+    Spec("backup.keep", "int", 1, 90),
+    Spec("backup.include_clips", "bool"),
 ]}
 
 
@@ -69,6 +74,11 @@ def coerce(key: str, value):
     if s.kind == "device":
         v = str(value or "").strip()
         return v or "auto"
+    if s.kind == "path":
+        v = str(value or "").strip()
+        if v and not v.startswith(("/", "~")):
+            raise ValueError("The backup folder must be a full path, like /mnt/barktracker-backup")
+        return v.rstrip("/") or None
     if s.kind == "str":
         v = (value or "").strip()
         if key == "notify.webhook_url" and v and not v.startswith(("http://", "https://")):

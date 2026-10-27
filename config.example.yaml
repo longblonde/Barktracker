@@ -51,3 +51,10 @@ ui:
   bark_words: true             # red BARK words over the live band while barking
   day_nap: true                # show the napping dog in the daytime when it's calm...
   day_nap_below_dbfs: -50      # ...meaning background noise below this level
+
+backup:
+  path: null                   # USB drive folder, e.g. /mnt/barktracker-backup (scripts/setup-usb-backup.sh)
+  enabled: true                # back up automatically
+  interval_hours: 24
+  keep: 7                      # database snapshots kept on the drive
+  include_clips: true          # copy the recordings too

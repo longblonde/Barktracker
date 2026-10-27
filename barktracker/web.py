@@ -8,6 +8,7 @@ import json
 import io
 import secrets
 import shutil
+import threading
 import time
 import zipfile
 from collections import defaultdict
@@ -22,6 +23,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import backup as BK
 from . import features as F
 from . import ordinance as O
 from . import settings as S
@@ -462,6 +464,103 @@ def create_app(bark: BarkApp) -> FastAPI:
         except ValueError as e:
             raise HTTPException(400, str(e))
         return get_settings()
+
+    # ---- backup to a USB drive and restore -------------------------------------------
+    def backup_status():
+        st = bark.backup.status()
+        st["drives"] = BK.drives(cfg)
+        st["restart_pending"] = bark.restart_pending
+        st["settings"] = {k: v for k, v in S.current(cfg).items() if k.startswith("backup.")}
+        return st
+
+    @app.get("/api/backup")
+    def get_backup():
+        return backup_status()
+
+    @app.post("/api/backup/check")
+    def check_backup_path(body: dict = Body(...)):
+        return BK.check_target(cfg, (body.get("path") or "").strip() or None, mount=True)
+
+    @app.post("/api/backup/run")
+    def run_backup():
+        if bark.backup.lock.locked():
+            raise HTTPException(409, "A backup is already running")
+        chk = BK.check_target(cfg, cfg.backup.path, mount=True)
+        if not chk["ok"]:
+            raise HTTPException(400, chk["reason"])
+        bark.backup_now()
+        time.sleep(0.2)
+        return backup_status()
+
+    @app.post("/api/backup/eject")
+    def eject_backup():
+        if bark.backup.lock.locked():
+            raise HTTPException(409, "A backup is running; wait for it to finish")
+        if not cfg.backup.path:
+            raise HTTPException(400, "No backup folder set")
+        return BK.eject(cfg.backup.path)
+
+    @app.get("/api/backup/database.db")
+    def download_database():
+        """A consistent copy of the log database (labels, training data, settings; no recordings)."""
+        import sqlite3
+        from starlette.background import BackgroundTask
+        tmp = cfg.data_path / f".download-{secrets.token_hex(4)}.db"
+        src, dst = sqlite3.connect(str(cfg.db_path), timeout=30), sqlite3.connect(str(tmp))
+        try:
+            src.backup(dst)
+            dst.execute("PRAGMA journal_mode=DELETE")
+        finally:
+            dst.close(); src.close()
+        name = f"barktracker-{datetime.now().strftime('%Y%m%d-%H%M')}.db"
+        return FileResponse(tmp, media_type="application/vnd.sqlite3", filename=name,
+                            background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)))
+
+    @app.post("/api/backup/inspect")
+    def inspect_backup(body: dict = Body(...)):
+        try:
+            return BK.inspect((body.get("path") or "").strip())
+        except BK.BackupError as e:
+            raise HTTPException(400, str(e))
+
+    def _staged(fn):
+        def go():
+            try:
+                fn()
+                bark.restart()
+            except Exception as e:  # noqa: BLE001
+                bark.backup.restore_progress = {"error": str(e)}
+        return go
+
+    @app.post("/api/backup/restore")
+    def restore_backup(body: dict = Body(...)):
+        path = (body.get("path") or "").strip()
+        try:
+            info = BK.inspect(path)          # fail fast on a wrong folder
+        except BK.BackupError as e:
+            raise HTTPException(400, str(e))
+        if body.get("confirm") != "RESTORE":
+            raise HTTPException(400, "Type RESTORE to confirm")
+        bark.backup.restore_progress = {"step": "starting", "done": 0, "total": 0}
+        threading.Thread(target=_staged(lambda: bark.backup.stage_restore(
+            info["root"], body.get("snapshot") or None, bool(body.get("include_clips", True)))),
+            daemon=True).start()
+        time.sleep(0.2)
+        return backup_status()
+
+    @app.put("/api/backup/restore-upload")
+    async def restore_upload(request: Request, confirm: str = ""):
+        if confirm != "RESTORE":
+            raise HTTPException(400, "Type RESTORE to confirm")
+        data = await request.body()
+        if len(data) < 100 or not data.startswith(b"SQLite format 3"):
+            raise HTTPException(400, "That isn't a Barktracker database file (.db)")
+        try:
+            out = bark.backup.stage_upload(data)
+        except BK.BackupError as e:
+            raise HTTPException(400, str(e))
+        out["restarting"] = bark.restart()
+        return out
 
     # ---- heartbeat: live state + idle/bark pictures -------------------------------
     livemode = LiveMode(cfg, store)

@@ -76,6 +76,16 @@ class UiConfig:
 
 
 @dataclass
+class BackupConfig:
+    path: str | None = None              # USB drive folder, e.g. /mnt/barktracker-backup (see README)
+    enabled: bool = True                 # back up automatically when a path is set
+    interval_hours: float = 24.0         # how often
+    keep: int = 7                        # database snapshots to keep on the drive
+    include_clips: bool = True           # mirror the recordings too (not just the log)
+    allow_same_disk: bool = False        # allow a folder on the SD card itself (testing only)
+
+
+@dataclass
 class Config:
     data_dir: str = "data"
     timezone: str | None = None          # e.g. America/Chicago; None = system local time
@@ -86,6 +96,7 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    backup: BackupConfig = field(default_factory=BackupConfig)
 
     @property
     def data_path(self) -> Path:
@@ -119,11 +130,13 @@ def _merge(dc: Any, values: dict) -> Any:
 
 def load_config(path: str | os.PathLike | None = None) -> Config:
     cfg = Config()
+    cfg.source_file = None                # the config.yaml that was loaded (copied into backups)
     candidates = [path] if path else [os.environ.get("BARKTRACKER_CONFIG"), "config.yaml"]
     for cand in candidates:
         if cand and Path(cand).exists():
             with open(cand) as fh:
                 _merge(cfg, yaml.safe_load(fh) or {})
+            cfg.source_file = str(Path(cand).resolve())
             base = Path(cand).resolve().parent
             # Relative paths in a config file are relative to that file.
             if not Path(cfg.data_dir).expanduser().is_absolute():

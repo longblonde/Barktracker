@@ -68,6 +68,7 @@ Calm background noise should read around -60 to -45 dBFS and a bark well above -
 Everything adjustable lives on the **Settings** page and takes effect immediately, no restart needed:
 
 - **Detection** (first, so the live EQ in the band above is on screen while you tune): bark confidence, loudness trigger, quiet floor, microphone boost, episode gap, smallest episode, ignoring learned false alarms.
+- **Backup and restore:** USB backup drive, how often, how many database copies, include recordings, back up now, safely remove the drive, download the database, and restore onto a new install (see [Backup and restore](#backup-and-restore)).
 - **Storage:** disk usage (clips, log, system, free space), how much audio recent barking adds per day and how many days the cap holds, clip retention, disk cap, clip length, pre and post roll.
 - **Code parameters:** quiet hours, sustained-barking minutes, allowed break, frequent-day total, habitual pattern.
 - **Ordinance and contacts:** rule text, code section, source, penalty, where to report, and your details for reports.
@@ -132,6 +133,33 @@ mic ─► 50 ms frames ─► noise floor tracker + onset gate
 - **Voice profiles.** Each dog's card shows its typical bark pitch, tone (brightness), bark length and spectral shape from its confirmed barks, and how often the Pi tells it apart from your other dogs (checked against your own labels).
 - Dog matching uses a per-bark voice descriptor (spectral shape, brightness, pitch, length) and a nearest-neighbour vote over your labels. It works well for dogs that sound different (big vs. small, different breeds). Two dogs of the same breed and size will often stay unidentified; that's a limit of the audio, not something more labels fully fix.
 
+## Backup and restore
+
+SD cards wear out. Point Barktracker at a USB drive and it keeps a copy of everything you'd hate to lose: the log database (every episode and bark, your dogs and neighbor details, every label you've given and the bark features behind them, which is all the training data for dog matching and "Not a bark"), your settings, ordinance and contacts, the recordings, your live-band pictures and `config.yaml`.
+
+**Set up the drive (once).** Plug it into the Pi and run:
+
+```bash
+./scripts/setup-usb-backup.sh            # lists USB drives
+./scripts/setup-usb-backup.sh /dev/sda1  # mounts that one at /mnt/barktracker-backup on every boot
+```
+
+Nothing is erased; exFAT, FAT32 and ext4 all work (ext4 copes best with power cuts). Then set **Settings → Backup and restore → Backup folder** to `/mnt/barktracker-backup` and save. On Raspberry Pi OS with a desktop you can instead pick the auto-mounted drive (under `/media/...`) from the list of drives on that page.
+
+**What happens.** Every 24 hours (adjustable) Barktracker writes a consistent snapshot of the database to `barktracker-backup/db/` on the drive (keeping the newest 7) and copies any new recordings and pictures. Only what changed is copied, so it's quick after the first run. A recording is removed from the drive only after the clip retention rules delete it from the log; a recording that disappears from a failing SD card is kept. The status line shows when the last backup ran and what it held. "Safely remove drive" unmounts it so you can unplug it; plug it back in and the next backup mounts it again.
+
+Barktracker refuses to back up onto the SD card itself (what an unmounted drive's folder really is), and won't write over a drive holding a different install's backup.
+
+**Restore onto a new Pi.** Install Barktracker as usual, set up the drive with `setup-usb-backup.sh`, then on **Settings → Backup and restore → Restore** press **Look for backups**, choose a database copy (newest is preselected), type RESTORE and press **Restore and restart**. The recordings are copied to the new SD card, the service restarts with the restored log, settings and training data, and backups carry on to the same drive. The database it replaced is kept in `data/pre-restore-<time>/`. From a terminal instead:
+
+```bash
+sudo systemctl stop barktracker
+.venv/bin/python -m barktracker restore /mnt/barktracker-backup     # --snapshot NAME, --no-clips
+sudo systemctl start barktracker
+```
+
+Without a USB drive, **Download database** saves the log, labels and settings (no recordings) to your computer, and **Restore from a downloaded database file** loads it back.
+
 ## Configuration
 
 Everything is in `config.yaml`, with comments: see [`config.example.yaml`](config.example.yaml). Common tweaks:
@@ -144,6 +172,7 @@ Everything is in `config.yaml`, with comments: see [`config.example.yaml`](confi
 | Keep clips longer | `clips.retention_days`, `clips.max_disk_mb` |
 | Require login | `web.username` and `web.password` |
 | Phone alert for long barking | `notify.webhook_url: https://ntfy.sh/<your-topic>` |
+| Back up to a USB drive | `backup.path: /mnt/barktracker-backup` (see above) |
 
 Restart after editing: `sudo systemctl restart barktracker`.
 
@@ -155,12 +184,14 @@ python -m barktracker run --file x.wav     # replay a recording through the live
 python -m barktracker ingest x.wav --start 2026-10-24T08:00   # log an existing recording
 python -m barktracker devices | level | retrain
 python -m barktracker refine [--all]      # re-scan saved clips so bark marks line up exactly
+python -m barktracker backup [--to DIR]    # back up now
+python -m barktracker restore DIR          # restore a backup onto this install (stop the service first)
 python -m barktracker demo                 # two weeks of synthetic barking to try the dashboard
 ```
 
 ## API
 
-The dashboard uses a small JSON API, documented at `/api/docs`. Useful bits: `/api/status`, `/api/summary?days=14`, `/api/episodes`, `/api/episodes/{id}/audio`, `/api/report?dog=1&from=2026-10-01&to=2026-10-31`, `/api/report.csv` (same parameters, plus `kind=daily`), `/api/report/clips.zip`, `/api/ordinance`, `/api/settings`, `/api/live` (or `/api/live/stream` for server-sent events: 6 per second while quiet, 20 while barking), `/api/media`.
+The dashboard uses a small JSON API, documented at `/api/docs`. Useful bits: `/api/status`, `/api/summary?days=14`, `/api/episodes`, `/api/episodes/{id}/audio`, `/api/report?dog=1&from=2026-10-01&to=2026-10-31`, `/api/report.csv` (same parameters, plus `kind=daily`), `/api/report/clips.zip`, `/api/ordinance`, `/api/settings`, `/api/live` (or `/api/live/stream` for server-sent events: 6 per second while quiet, 20 while barking), `/api/media`, `/api/backup` (status, `/run`, `/inspect`, `/restore`, `/database.db`).
 
 ## Development
 
