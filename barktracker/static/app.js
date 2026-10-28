@@ -3,7 +3,7 @@
 
 const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
-const S = { dogs: {}, status: null, tz: undefined, overviewDate: null, clipFilters: { dog: "", unreviewed: false, min: 0, offset: 0 } };
+const S = { dogs: {}, status: null, tz: undefined, overviewDate: null, clipFilters: { dog: "", review: "", min: 0, offset: 0 } };
 const UNKNOWN = "#9aa5ad";
 const NOT_BARK = 0;
 
@@ -69,6 +69,77 @@ function dogTags(dogs) {
   if (!e.length) return `<span class="tag">No dog</span>`;
   return e.map(([k, n]) => `<span class="tag" style="--c:${dogColor(k)}"><i></i>${esc(dogName(k))} ×${n}</span>`).join("");
 }
+const MARK = {
+  auto: ["Auto", "Found, and matched to a dog if possible, automatically. Nobody has checked it yet."],
+  manual: ["Manual", "You labelled the barks or reviewed this clip."],
+  mixed: ["Partly manual", "You labelled some of the barks; the rest were matched automatically."],
+};
+function markBadge(m) {
+  if (!MARK[m]) return "";
+  return `<span class="mark mark-${m}" title="${MARK[m][1]}">${m === "auto" ? "Auto" : m === "manual" ? "✓ Manual" : "◐ Partly manual"}</span>`;
+}
+
+// --- which dogs the overview shows (kept per browser)
+function loadDogFilter() {
+  if (S.dogFilter) return;
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("bt.dogFilter") || "{}"); } catch (_) { saved = {}; }
+  S.dogFilter = new Set(Array.isArray(saved.dogs) ? saved.dogs : []);
+  S.filterBy = saved.by === "households" ? "households" : "dogs";
+}
+function saveDogFilter() {
+  try { localStorage.setItem("bt.dogFilter", JSON.stringify({ dogs: [...S.dogFilter], by: S.filterBy })); } catch (_) { /* private mode */ }
+}
+function households() {
+  // group dogs by address (or owner when there's no address)
+  const m = new Map();
+  for (const d of Object.values(S.dogs)) {
+    const addr = (d.address || "").trim(), owner = (d.owner || "").trim();
+    const key = (addr || owner).toLowerCase() || `dog:${d.id}`;
+    if (!m.has(key)) m.set(key, { label: addr || owner || d.name, sub: addr && owner ? owner : addr || owner ? "" : "no household set", dogs: [] });
+    m.get(key).dogs.push(String(d.id));
+  }
+  return [...m.values()];
+}
+function dogsQS() {
+  return S.dogFilter && S.dogFilter.size ? `&dogs=${[...S.dogFilter].join(",")}` : "";
+}
+function filterLabel() {
+  if (!S.dogFilter?.size) return "";
+  const names = [...S.dogFilter].map(dogName);
+  return names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+function dogFilterBar() {
+  const dogs = Object.values(S.dogs);
+  if (!dogs.length) return "";
+  const sel = S.dogFilter;
+  const chip = (keys, label, sub, color) => {
+    const on = keys.length && keys.every((k) => sel.has(k));
+    return `<button type="button" class="chip" aria-pressed="${on}" data-keys="${keys.join(",")}">${color ? `<i style="--c:${color}"></i>` : ""}${esc(label)}${sub ? `<small>${esc(sub)}</small>` : ""}</button>`;
+  };
+  const chips = S.filterBy === "households"
+    ? households().map((h) => chip(h.dogs, h.label, h.sub || h.dogs.map(dogName).join(", "), null))
+    : dogs.map((d) => chip([String(d.id)], d.name, "", d.color)).concat(chip(["u"], "Unidentified", "", UNKNOWN));
+  return `<div class="dogfilter" role="group" aria-label="Show barking from">
+    <span class="seg" role="radiogroup" aria-label="Pick by">
+      <button type="button" role="radio" data-by="dogs" aria-checked="${S.filterBy === "dogs"}">Dogs</button>
+      <button type="button" role="radio" data-by="households" aria-checked="${S.filterBy === "households"}">Households</button>
+    </span>
+    <button type="button" class="chip" data-keys="" aria-pressed="${!sel.size}">Everyone</button>
+    ${chips.join("")}
+  </div>`;
+}
+function wireDogFilter(rerender) {
+  view.querySelectorAll(".dogfilter [data-by]").forEach((b) => b.onclick = () => { S.filterBy = b.dataset.by; saveDogFilter(); rerender(); });
+  view.querySelectorAll(".dogfilter .chip").forEach((b) => b.onclick = () => {
+    const keys = b.dataset.keys ? b.dataset.keys.split(",") : [];
+    if (!keys.length) S.dogFilter.clear();
+    else if (keys.every((k) => S.dogFilter.has(k))) keys.forEach((k) => S.dogFilter.delete(k));
+    else keys.forEach((k) => S.dogFilter.add(k));
+    saveDogFilter(); rerender();
+  });
+}
+
 async function loadDogs() {
   const r = await api("/api/dogs");
   S.dogs = Object.fromEntries(r.dogs.map((d) => [String(d.id), d]));
@@ -137,13 +208,18 @@ async function renderOverview(soft = false) {
   if (!S.overviewDate) S.overviewDate = isoToday();
   const date = S.overviewDate;
   if (!soft) view.innerHTML = `<p class="muted">Loading…</p>`;
-  const [day, sum, heat, recent] = await Promise.all([
-    api(`/api/day?date=${date}`), api("/api/summary?days=14"), api("/api/heatmap?days=28"),
-    api("/api/episodes?limit=6"), loadDogs(),
+  loadDogFilter();
+  await loadDogs();
+  for (const k of [...S.dogFilter]) if (k !== "u" && !S.dogs[k]) S.dogFilter.delete(k);   // a dog was deleted
+  const dq = dogsQS();
+  const [day, sum, heat, todo, done] = await Promise.all([
+    api(`/api/day?date=${date}${dq}`), api(`/api/summary?days=14${dq}`), api(`/api/heatmap?days=28${dq}`),
+    api(`/api/episodes?limit=6&review=todo${dq}`), api(`/api/episodes?limit=6&review=done${dq}`),
   ]);
   if (route.name !== "overview") return;
   const eps = day.episodes;
-  const total = eps.reduce((a, e) => a + e.duration, 0);
+  const who = filterLabel();
+  const total = eps.reduce((a, e) => a + e.duration * (e.share ?? 1), 0);
   const longest = eps.reduce((a, e) => (e.duration > (a?.duration ?? -1) ? e : a), null);
   const isToday = date === isoToday();
   const when = isToday ? "today" : prettyIso(date) === "Yesterday" ? "yesterday" : `on ${prettyIso(date)}`;
@@ -152,17 +228,21 @@ async function renderOverview(soft = false) {
   const perDog = {};
   for (const e of eps) {
     const tot = Object.values(e.dogs).reduce((a, b) => a + b, 0) || 1;
-    for (const [k, n] of Object.entries(e.dogs)) perDog[k] = (perDog[k] || 0) + (e.duration * n) / tot;
+    for (const [k, n] of Object.entries(e.dogs)) {
+      if (S.dogFilter.size && !S.dogFilter.has(k)) continue;
+      perDog[k] = (perDog[k] || 0) + (e.duration * n) / tot;
+    }
   }
   const top = Object.entries(perDog).sort((a, b) => b[1] - a[1]);
   let headline, detail = "";
   if (!eps.length) {
-    headline = isToday ? "No barking so far today." : `No barking logged ${when}.`;
+    headline = who ? `No barking from ${who} ${isToday ? "so far today" : when}.`
+      : isToday ? "No barking so far today." : `No barking logged ${when}.`;
     detail = isToday && S.status?.detector ? "Listening. Episodes show up here as soon as they end." : "";
   } else {
-    headline = `Barked ${fmtMinutes(total)} ${when} across ${eps.length} episode${eps.length === 1 ? "" : "s"}.`;
+    headline = `${who ? `${who} barked` : "Barked"} ${fmtMinutes(total)} ${when} across ${eps.length} episode${eps.length === 1 ? "" : "s"}.`;
     detail = `Longest was ${fmtDur(longest.duration)} at ${fmtTime(longest.start_ts)}.`;
-    if (top.length && top[0][0] !== "u" && total > 0) {
+    if (top.length && top[0][0] !== "u" && total > 0 && (!who || top.length > 1)) {
       detail += ` ${dogName(top[0][0])} did ${Math.round((100 * top[0][1]) / total)}% of it.`;
     }
     const hits = (day.incidents || []).filter((i) => i.flags.length).length;
@@ -183,18 +263,28 @@ async function renderOverview(soft = false) {
         </div>
         ${!isToday ? `<button class="btn" id="todayBtn">Back to today</button>` : ""}
       </div>
+      ${dogFilterBar()}
       <div><h1>${esc(headline)}</h1><p class="sub">${esc(detail)}</p></div>
       <div class="strip-wrap">${stripSvg(day, isToday, cw.strip)}
         <div class="legend" style="margin-top:6px">${legend}</div></div>
     </section>
     <section class="grid2">
-      <div class="panel"><h2>Last two weeks</h2>${barsSvg(sum, cw.bars)}<p class="small muted" style="margin:6px 0 0">Minutes of barking per day. Select a day to see it above.</p></div>
-      <div class="panel"><h2>When it happens</h2>${heatSvg(heat, cw.heat)}<p class="small muted" style="margin:6px 0 0">Past 4 weeks by hour. Darker means more barking.</p></div>
+      <div class="panel"><h2>Last two weeks${who ? `: ${esc(who)}` : ""}</h2>${barsSvg(sum, cw.bars)}<p class="small muted" style="margin:6px 0 0">Minutes of barking per day. Select a day to see it above.</p></div>
+      <div class="panel"><h2>When it happens${who ? `: ${esc(who)}` : ""}</h2>${heatSvg(heat, cw.heat)}<p class="small muted" style="margin:6px 0 0">Past 4 weeks by hour. Darker means more barking.</p></div>
     </section>
     <section>
-      <div class="row spread"><h2>Recent clips</h2><a href="#/clips" class="small">All clips</a></div>
-      ${episodeList(recent.items, "Nothing recorded yet", "When the Pi hears barking it saves a clip here for you to review.")}
+      <div class="row spread"><h2>Needs review <span class="count">${todo.total}</span></h2><a href="#/clips" class="small" data-review="todo">All ${todo.total > 6 ? todo.total : ""} to review</a></div>
+      <p class="small muted sec-sub">New clips nobody has labelled or reviewed yet. Dogs shown here were matched automatically.</p>
+      ${episodeList(todo.items, done.total ? "All caught up" : "Nothing recorded yet", done.total ? "Every clip has been reviewed or labelled." : "When the Pi hears barking it saves a clip here for you to review.")}
+    </section>
+    <section>
+      <div class="row spread"><h2>Reviewed and labelled <span class="count">${done.total}</span></h2><a href="#/clips" class="small" data-review="done">All reviewed</a></div>
+      ${episodeList(done.items, "None yet", "Open a clip and label its barks, or press Mark reviewed, and it moves here.")}
     </section>`;
+  wireDogFilter(() => renderOverview(true));
+  view.querySelectorAll("a[data-review]").forEach((a) => a.onclick = () => {
+    Object.assign(S.clipFilters, { review: a.dataset.review, offset: 0, dog: S.dogFilter.size === 1 ? [...S.dogFilter][0] : "" });
+  });
   $("#prevDay").onclick = () => { S.overviewDate = shiftIso(date, -1); renderOverview(); };
   $("#nextDay").onclick = () => { S.overviewDate = shiftIso(date, 1); renderOverview(); };
   const tb = $("#todayBtn"); if (tb) tb.onclick = () => { S.overviewDate = isoToday(); renderOverview(); };
@@ -290,7 +380,7 @@ function episodeList(items, emptyTitle, emptyText) {
       <span class="dur">${fmtDur(e.duration)}</span>
       <span class="n">${e.bark_count} ${e.false_positive ? "sound" : "bark"}${e.bark_count === 1 ? "" : "s"}</span>
       <span class="dogs">${dogTags(e.dogs)}</span>
-      <span class="state ${e.reviewed || e.false_positive ? "" : "new"}">${e.live ? "Recording" : e.false_positive ? (e.has_clip ? "Not a bark" : "Not a bark, audio deleted") : e.reviewed ? "Reviewed" : "New"}</span>
+      <span class="state ${e.reviewed || e.false_positive || e.marked === "mixed" ? "" : "new"}">${e.live ? "Recording" : e.false_positive ? (e.has_clip ? "Not a bark" : "Not a bark, audio deleted") : e.reviewed ? "Reviewed" : e.marked === "mixed" ? "Labelled" : "New"}${e.live || e.false_positive ? "" : markBadge(e.marked)}</span>
     </a>`).join("")}</div>`;
 }
 
@@ -301,7 +391,7 @@ async function renderClips() {
   f.kind = f.kind || "barking";
   const qs = new URLSearchParams({ limit: 30, offset: f.offset, kind: f.kind });
   if (f.dog) qs.set("dog", f.dog);
-  if (f.unreviewed) qs.set("unreviewed", "true");
+  if (f.review) qs.set("review", f.review);
   if (f.min) qs.set("min_duration", f.min);
   const [r, nb] = await Promise.all([api(`/api/episodes?${qs}`), api("/api/not-bark")]);
   if (route.name !== "clips") return;
@@ -321,7 +411,7 @@ async function renderClips() {
       </div>` : ""}
       <div class="filters" ${notBark ? 'hidden' : ""}>
         <select id="fDog" aria-label="Filter by dog"><option value="">All dogs</option>${opts}<option value="u" ${f.dog === "u" ? "selected" : ""}>Unidentified</option></select>
-        <label class="row" style="gap:6px"><input type="checkbox" id="fNew" ${f.unreviewed ? "checked" : ""}> Not yet reviewed</label>
+        <select id="fReview" aria-label="Filter by review"><option value="">Any status</option><option value="todo" ${f.review === "todo" ? "selected" : ""}>Needs review</option><option value="done" ${f.review === "done" ? "selected" : ""}>Reviewed or labelled</option></select>
         <label class="row" style="gap:6px">At least <input type="number" id="fMin" min="0" step="5" value="${f.min || 0}" style="width:5em"> seconds</label>
         <span class="muted small" style="margin-left:auto">${r.total} clip${r.total === 1 ? "" : "s"}</span>
       </div>
@@ -340,7 +430,7 @@ async function renderClips() {
     toast(`Deleted audio of ${res.deleted} clip${res.deleted === 1 ? "" : "s"}, freed ${res.freed_mb} MB`); renderClips();
   };
   $("#fDog").onchange = (e) => { f.dog = e.target.value; f.offset = 0; renderClips(); };
-  $("#fNew").onchange = (e) => { f.unreviewed = e.target.checked; f.offset = 0; renderClips(); };
+  $("#fReview").onchange = (e) => { f.review = e.target.value; f.offset = 0; renderClips(); };
   $("#fMin").onchange = (e) => { f.min = Number(e.target.value) || 0; f.offset = 0; renderClips(); };
   $("#pPrev").onclick = () => { f.offset = Math.max(0, f.offset - 30); renderClips(); };
   $("#pNext").onclick = () => { f.offset += 30; renderClips(); };
@@ -380,6 +470,7 @@ async function renderClip() {
         <div><dt>${ep.false_positive ? "Sounds" : "Barks"}</dt><dd>${ep.bark_count}</dd></div>
         <div><dt>Loudest</dt><dd>${ep.peak_db != null ? ep.peak_db.toFixed(0) + " dBFS" : "–"}</dd></div>
         <div><dt>Detector confidence</dt><dd>${ep.max_prob != null ? Math.round(ep.max_prob * 100) + "%" : "–"}</dd></div>
+        ${ep.false_positive ? "" : `<div><dt>Marked</dt><dd>${markBadge(ep.marked)}${ep.marked === "mixed" ? ` <span class="small muted">${ep.labelled} of ${ep.bark_count}</span>` : ""}</dd></div>`}
       </dl>
       ${ep.live ? `<div class="notice">Still recording. Refresh when the barking stops to hear the full clip.</div>` : ""}
       ${ep.false_positive ? `<div class="notice nb">
@@ -632,7 +723,7 @@ async function renderSettings() {
     <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}">${t}</a>`).join("")}</nav>
     ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}
     <footer class="version">Barktracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
-  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); drawPictures({ ...media, barkWords: st.values["ui.bark_words"] !== false, dayNap: st.values["ui.day_nap"] !== false, dayNapBelow: st.values["ui.day_nap_below_dbfs"] }); drawNotify(st); drawSystem(st); drawBackup();
+  drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); S.values = st.values; drawPictures(media); drawNotify(st); drawSystem(st); drawBackup();
   if (route.arg) $(`#sec-${route.arg}`)?.scrollIntoView();
 }
 
@@ -938,7 +1029,10 @@ function drawOrdinance(r) {
   };
 }
 
-function drawPictures(m) {
+function drawPictures(media) {
+  const v = S.values || {};
+  const m = { ...media, barkWords: v["ui.bark_words"] !== false, dayNap: v["ui.day_nap"] !== false, dayNapBelow: v["ui.day_nap_below_dbfs"],
+              soundNotes: v["ui.sound_notes"] !== false, soundMin: v["ui.sound_note_min"] ?? 0.8 };
   const col = (kind, title, help) => {
     const items = m[kind], own = items.some((i) => i.own);
     return `<div class="piccol">
@@ -956,6 +1050,8 @@ function drawPictures(m) {
       <label class="check"><input type="checkbox" name="ui.day_nap" ${m.dayNap ? "checked" : ""}> Show the napping dog in the daytime when it's calm</label>
       <label>Calm means background noise below<span class="unit"><input type="number" name="ui.day_nap_below_dbfs" value="${m.dayNapBelow}" min="-90" max="-10" step="1" required>dBFS</span>
         <span class="help" id="ambNow">Background noise right now: measuring…</span></label>
+      <label class="check"><input type="checkbox" name="ui.sound_notes" ${m.soundNotes ? "checked" : ""}> Name other sounds the Pi recognizes, like “Hearing a car”</label>
+      <label>Only when the sound model is at least<span class="unit"><input type="number" name="ui.sound_note_min" value="${Math.round(m.soundMin * 100)}" min="30" max="99" step="1" required>% sure</span></label>
       <button class="btn" type="submit">Save</button>
     </form>
     <div class="three">
@@ -968,8 +1064,11 @@ function drawPictures(m) {
     e.preventDefault();
     const f = e.target;
     try {
-      await api("/api/settings", { method: "PUT", body: { values: { "ui.day_nap": f.elements["ui.day_nap"].checked, "ui.day_nap_below_dbfs": f.elements["ui.day_nap_below_dbfs"].value } } });
-      toast("Daytime napping saved");
+      const st = await api("/api/settings", { method: "PUT", body: { values: {
+        "ui.day_nap": f.elements["ui.day_nap"].checked, "ui.day_nap_below_dbfs": f.elements["ui.day_nap_below_dbfs"].value,
+        "ui.sound_notes": f.elements["ui.sound_notes"].checked, "ui.sound_note_min": Number(f.elements["ui.sound_note_min"].value) / 100 } } });
+      S.values = st.values;
+      toast("Live band settings saved");
     } catch (err) { toast(err.message); }
   };
   clearInterval(S.ambTimer);
@@ -982,6 +1081,7 @@ function drawPictures(m) {
     try {
       await api("/api/settings", { method: "PUT", body: { values: { "ui.bark_words": e.target.checked } } });
       Beat.setPrefs({ barkWords: e.target.checked });
+      if (S.values) S.values["ui.bark_words"] = e.target.checked;
       toast(e.target.checked ? "BARK words on" : "BARK words off");
     } catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
   };
@@ -991,11 +1091,11 @@ function drawPictures(m) {
       try { r = await fetch(`/api/media/${inp.dataset.up}/${encodeURIComponent(f.name)}`, { method: "PUT", body: f }).then(async (x) => { if (!x.ok) throw new Error((await x.json()).detail); return x.json(); }); }
       catch (e) { toast(`${f.name}: ${e.message}`); }
     }
-    toast("Pictures added"); drawPictures({ ...r, barkWords: $("#barkWords").checked, dayNap: $("#dayNapForm").elements["ui.day_nap"].checked, dayNapBelow: $("#dayNapForm").elements["ui.day_nap_below_dbfs"].value }); Beat.loadMedia();
+    toast("Pictures added"); drawPictures(r); Beat.loadMedia();
   }));
   $("#sec-pictures").querySelectorAll("[data-delpic]").forEach((b) => b.addEventListener("click", async () => {
     const r = await api(`/api/media/${b.dataset.delpic.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
-    toast("Picture removed"); drawPictures({ ...r, barkWords: $("#barkWords").checked, dayNap: $("#dayNapForm").elements["ui.day_nap"].checked, dayNapBelow: $("#dayNapForm").elements["ui.day_nap_below_dbfs"].value }); Beat.loadMedia();
+    toast("Picture removed"); drawPictures(r); Beat.loadMedia();
   }));
 }
 
@@ -1214,7 +1314,7 @@ function renderSystemLive() {
 // falling bars and peak caps (monotone normally, full color while barking), and BARK splashes.
 const Beat = (() => {
   const band = $("#beat"), mediaEl = $("#beatMedia"), splash = $("#splash");
-  const title = $("#beatTitle"), sub = $("#beatSub"), canvas = $("#beatEq");
+  const title = $("#beatTitle"), sub = $("#beatSub"), canvas = $("#beatEq"), heard = $("#beatHeard");
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
   const KIND = { nap: "quiet", sit: "active", bark: "bark" };
   let media = { quiet: [], active: [], bark: [] }, shown = {}, lastBarks = null, prevState = "connecting";
@@ -1294,6 +1394,11 @@ const Beat = (() => {
       sub.textContent = l.quiet_hours ? `Quiet hours, ${bg}` : `Calm daytime, ${bg}`;
       show("quiet");
     }
+    const h = l.heard && l.state !== "off" && !(l.error && l.state !== "barking") ? l.heard : null;
+    if (heard) {
+      heard.hidden = !h;
+      if (h) { heard.textContent = `Hearing ${h.text}`; heard.title = `The sound model is ${Math.round(h.score * 100)}% sure: “${h.label}”`; }
+    }
     const started = l.state === "barking" && prevState !== "barking";
     if (lastBarks !== null && l.barks > lastBarks) spawn(l.barks - lastBarks + (started ? 2 : 0));
     else if (started) spawn(3);
@@ -1303,6 +1408,7 @@ const Beat = (() => {
     if (++failures < 3) return;
     live = { ...live, state: "error", bands: [] };
     band.dataset.state = "error"; title.textContent = "Can't reach the Pi"; sub.textContent = "Retrying…";
+    if (heard) heard.hidden = true;
   }
   function connect() {
     if (document.hidden) return;

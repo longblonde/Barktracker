@@ -78,6 +78,7 @@ class BarkDetector:
         self.history: collections.deque = collections.deque(maxlen=200)   # (ts, level, floor)
         self.eq = np.zeros(F.EQ_BANDS, np.float32)
         self.last_prob = 0.0
+        self.heard: tuple[float, str, float] | None = None   # (wall time, model label, score)
         self.last_detail: dict = {}
         self.last_classify_ms = 0.0
         self.last_bark_wall = 0.0
@@ -186,6 +187,9 @@ class BarkDetector:
                 prob, detail = p2, d2
         self.last_classify_ms = (time.perf_counter() - t0) * 1000
         self.last_prob, self.last_detail = prob, detail
+        top, score = detail.get("other"), detail.get("other_score")
+        if top and score is not None:
+            self.heard = (time.time(), top, float(score))   # what else the model recognised (live band note)
         self.stats["classified"] += 1
         if prob < self.det.bark_threshold:
             return

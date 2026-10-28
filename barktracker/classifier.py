@@ -110,7 +110,14 @@ class YamnetClassifier(Classifier):
         p = max(weighted.values()) if weighted else 0.0
         top = int(np.argmax(s))
         top_label = self.labels[top] if self.labels else str(top)
-        return float(min(1.0, p)), {"top": top_label, "top_score": float(s[top]),
+        other = {}
+        if self.labels:        # the strongest sound that isn't the dog or the room (live band note)
+            from .sounds import SKIP
+            for i in np.argsort(s)[::-1][:8]:
+                if self.labels[i] not in SKIP:
+                    other = {"other": self.labels[i], "other_score": float(s[i])}
+                    break
+        return float(min(1.0, p)), {"top": top_label, "top_score": float(s[top]), **other,
                                     **{k: round(v, 3) for k, v in weighted.items()}}
 
 

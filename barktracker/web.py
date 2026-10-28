@@ -103,6 +103,33 @@ def create_app(bark: BarkApp) -> FastAPI:
             out[r["episode_id"]][k] = out[r["episode_id"]].get(k, 0) + r["n"]
         return out
 
+    def parse_sel(s: str | None) -> set[str] | None:
+        """'1,3,u' -> {'1','3','u'} (dog ids, u = unidentified); empty = everyone."""
+        if not s:
+            return None
+        sel = {x.strip() for x in s.split(",") if x.strip()}
+        if not all(x == "u" or x.isdigit() for x in sel):
+            raise HTTPException(400, "dogs must be dog ids or u, separated by commas")
+        return sel or None
+
+    def share(split: dict, sel: set[str] | None) -> float:
+        """Fraction of an episode's barking that belongs to the selected dogs (by bark count)."""
+        if sel is None:
+            return 1.0
+        tot = sum(split.values())
+        if not tot:
+            return 1.0 if "u" in sel else 0.0
+        return sum(n for k, n in split.items() if k in sel) / tot
+
+    def marking(n: int, labelled: int, reviewed: bool) -> str:
+        """How the dogs in an episode were decided: auto (detector + matching only), manual (you
+        labelled every bark, or reviewed it and kept what it found), or mixed."""
+        if n and labelled >= n:
+            return "manual"
+        if labelled:
+            return "mixed"
+        return "manual" if reviewed else "auto"
+
     def ep_view(e: dict, split: dict | None = None) -> dict:
         dogs = split if split is not None else {}
         return {
@@ -153,7 +180,8 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     # ---- stats ----------------------------------------------------------------
     @app.get("/api/summary")
-    def summary(days: int = 14):
+    def summary(days: int = 14, dogs: str | None = None):
+        sel = parse_sel(dogs)
         days = max(1, min(days, 366))
         d_end = today()
         d0 = d_end - timedelta(days=days - 1)
@@ -169,14 +197,18 @@ def create_app(bark: BarkApp) -> FastAPI:
                 continue
             b = buckets[d]
             dur = max(0.0, e["end_ts"] - e["start_ts"])
-            b["episodes"] += 1
-            b["barks"] += e["bark_count"]
-            b["seconds"] += dur
-            b["longest"] = max(b["longest"], dur)
             s = split.get(e["id"], {})
+            f = share(s, sel)
+            if f <= 0:
+                continue
+            b["episodes"] += 1
+            b["barks"] += e["bark_count"] if sel is None else sum(n for k, n in s.items() if k in sel) or e["bark_count"]
+            b["seconds"] += dur * f
+            b["longest"] = max(b["longest"], dur * f)
             tot = sum(s.values())
             for k, n in s.items():
-                b["by_dog"][k] += dur * n / tot
+                if sel is None or k in sel:
+                    b["by_dog"][k] += dur * n / tot
             if not tot:
                 b["by_dog"]["u"] += dur
         out = [{"date": d.isoformat(), **{k: (round(v, 1) if isinstance(v, float) else v)
@@ -186,36 +218,46 @@ def create_app(bark: BarkApp) -> FastAPI:
         return {"days": out, "dogs": store.dogs()}
 
     @app.get("/api/day")
-    def day(ds: str | None = Query(None, alias="date")):
+    def day(ds: str | None = Query(None, alias="date"), dogs: str | None = None):
+        sel = parse_sel(dogs)
         d = date.fromisoformat(ds) if ds else today()
         t0, t1 = day_start(d), day_start(d + timedelta(days=1))
-        eps = store.episodes_between(t0, t1)
         split = dog_split(t0, t1)
+        eps = [e for e in store.episodes_between(t0, t1) if share(split.get(e["id"], {}), sel) > 0]
         barks = store.q("SELECT b.ts, COALESCE(b.label_dog_id, b.pred_dog_id) dog_id FROM barks b"
                         " JOIN episodes e ON e.id=b.episode_id WHERE b.ts>=? AND b.ts<? AND"
                         " e.false_positive=0 AND COALESCE(b.label_dog_id, b.pred_dog_id, -1) != 0",
                         (t0, t1))
+        if sel is not None:
+            barks = [b for b in barks if ("u" if b["dog_id"] is None else str(b["dog_id"])) in sel]
         th = O.get_ordinance(store)["thresholds"]
         incs = O.build_incidents([{**e, "subject_barks": e["bark_count"]} for e in eps], th, O.Clock(cfg.timezone))
         return {"date": d.isoformat(), "start_ts": t0, "end_ts": t1,
                 "incidents": [{"start_ts": i["start_ts"], "end_ts": i["end_ts"], "flags": i["flags"],
                                "duration": i["duration"]} for i in incs],
-                "episodes": [ep_view(e, split.get(e["id"], {})) for e in eps],
+                "episodes": [{**ep_view(e, split.get(e["id"], {})), "share": round(share(split.get(e["id"], {}), sel), 3)}
+                             for e in eps],
+                "dogs_filter": sorted(sel) if sel else None,
                 "barks": [[round(b["ts"], 2), b["dog_id"]] for b in barks]}
 
     @app.get("/api/heatmap")
-    def heatmap(days: int = 28):
+    def heatmap(days: int = 28, dogs: str | None = None):
+        sel = parse_sel(dogs)
         d_end = today()
         d0 = d_end - timedelta(days=days - 1)
         t0, t1 = day_start(d0), day_start(d_end + timedelta(days=1))
+        split = dog_split(t0, t1) if sel else {}
         grid = [[0.0] * 24 for _ in range(7)]   # [weekday Mon=0][hour] seconds
         for e in store.episodes_between(t0, t1):
+            f = share(split.get(e["id"], {}), sel)
+            if f <= 0:
+                continue
             s, end = e["start_ts"], max(e["end_ts"], e["start_ts"] + 0.5)
             while s < end:
                 dt = to_dt(s)
                 nxt = (dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)).timestamp()
                 seg = min(end, nxt) - s
-                grid[dt.weekday()][dt.hour] += seg
+                grid[dt.weekday()][dt.hour] += seg * f
                 s = min(end, nxt)
         return {"days": days, "grid": [[round(v, 1) for v in row] for row in grid]}
 
@@ -223,8 +265,24 @@ def create_app(bark: BarkApp) -> FastAPI:
     @app.get("/api/episodes")
     def episodes(limit: int = 50, offset: int = 0, dog: str | None = None,
                  unreviewed: bool = False, include_fp: bool = False, min_duration: float = 0.0,
-                 date_from: str | None = None, date_to: str | None = None, kind: str = "barking"):
+                 date_from: str | None = None, date_to: str | None = None, kind: str = "barking",
+                 dogs: str | None = None, review: str | None = None):
         where, args = ["1=1"], []
+        labelled_sql = "EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND b.label_dog_id IS NOT NULL)"
+        if review == "todo":        # nobody has looked at it: not reviewed, no bark labelled
+            where.append(f"e.reviewed=0 AND NOT {labelled_sql}")
+        elif review == "done":      # reviewed or at least partly labelled by you
+            where.append(f"(e.reviewed=1 OR {labelled_sql})")
+        sel = parse_sel(dogs)
+        if sel:
+            conds = []
+            ids = [int(x) for x in sel if x != "u"]
+            if ids:
+                conds.append("COALESCE(b.label_dog_id, b.pred_dog_id) IN (%s)" % ",".join("?" * len(ids)))
+                args.extend(ids)
+            if "u" in sel:
+                conds.append("COALESCE(b.label_dog_id, b.pred_dog_id) IS NULL")
+            where.append("EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND (%s))" % " OR ".join(conds))
         if kind == "not_bark":
             where.append("e.false_positive=1")
         elif not include_fp:
@@ -255,13 +313,16 @@ def create_app(bark: BarkApp) -> FastAPI:
         out = []
         for e in rows:
             s = {}
-            for r in store.q("SELECT COALESCE(label_dog_id, pred_dog_id) d, COUNT(*) n FROM barks"
-                             " WHERE episode_id=? GROUP BY d", (e["id"],)):
+            n = lab = 0
+            for r in store.q("SELECT COALESCE(label_dog_id, pred_dog_id) d, COUNT(*) n,"
+                             " SUM(label_dog_id IS NOT NULL) lab FROM barks WHERE episode_id=? GROUP BY d", (e["id"],)):
+                n += r["n"]
+                lab += r["lab"] or 0
                 if r["d"] == NOT_BARK:
                     continue
                 k = "u" if r["d"] is None else str(r["d"])
                 s[k] = r["n"]
-            out.append(ep_view(e, s))
+            out.append({**ep_view(e, s), "marked": marking(n, lab, bool(e["reviewed"])), "labelled": lab})
         return {"total": total, "items": out}
 
     @app.get("/api/episodes/{eid}")
@@ -281,7 +342,9 @@ def create_app(bark: BarkApp) -> FastAPI:
                         " ORDER BY start_ts DESC LIMIT 1", (e["start_ts"],))
         nxt = store.q1("SELECT id FROM episodes WHERE start_ts > ? AND false_positive=0"
                        " ORDER BY start_ts LIMIT 1", (e["start_ts"],))
-        return {**ep_view(e, s), "barks": barks, "sound": V.episode_sound(store, eid),
+        lab = sum(1 for b in barks if b["label_dog_id"] is not None)
+        return {**ep_view(e, s), "marked": marking(len(barks), lab, bool(e["reviewed"])), "labelled": lab,
+                "barks": barks, "sound": V.episode_sound(store, eid),
                 "prev_id": prev["id"] if prev else None, "next_id": nxt["id"] if nxt else None}
 
     @app.get("/api/episodes/{eid}/audio")

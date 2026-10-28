@@ -51,6 +51,8 @@ ui:
   bark_words: true             # red BARK words over the live band while barking
   day_nap: true                # show the napping dog in the daytime when it's calm...
   day_nap_below_dbfs: -50      # ...meaning background noise below this level
+  sound_notes: true            # "Hearing a car" on the live band for other recognized sounds...
+  sound_note_min: 0.8          # ...when the sound model is at least this sure
 
 backup:
   path: null                   # USB drive folder, e.g. /mnt/barktracker-backup (scripts/setup-usb-backup.sh)

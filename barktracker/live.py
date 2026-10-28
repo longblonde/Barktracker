@@ -16,11 +16,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from . import ordinance as O
+from .sounds import phrase
 
 NOISY_ABOVE_FLOOR_DB = 8.0     # smoothed level this far above background counts as medium noise
 NOISY_ABSOLUTE_DBFS = -38.0    # ...or this loud regardless of background
 SETTLE_SECONDS = 4.0           # nap <-> sit only after the condition holds this long
 BARK_LINGER_SECONDS = 2.5
+HEARD_SECONDS = 5.0            # a "Hearing a car" note stays this long after the sound was recognised
 
 
 class LiveMode:
@@ -57,6 +59,15 @@ class LiveMode:
             return -90.0, det.floor or -90.0
         return sum(h[1] for h in hist) / len(hist), hist[-1][2]
 
+    def heard(self, det, now: float) -> dict | None:
+        """Another sound the model recognised with high certainty in the last few seconds."""
+        h = getattr(det, "heard", None)
+        ui = self.cfg.ui
+        if not ui.sound_notes or not h or now - h[0] > HEARD_SECONDS or h[2] < ui.sound_note_min:
+            return None
+        text = phrase(h[1])
+        return {"label": h[1], "text": text, "score": round(h[2], 2)} if text else None
+
     def snapshot(self, det, error: str | None = None, now: float | None = None) -> dict:
         now = now or time.time()
         if det is None:
@@ -88,6 +99,7 @@ class LiveMode:
             "level_db": round(det.prev_level, 1), "floor_db": round(det.floor or -90, 1),
             "noisy": bool(noisy), "quiet_hours": quiet_hours, "ambient_db": round(level, 1),
             "day_quiet": bool(day_quiet),
+            "heard": self.heard(det, now),
             "bands": [round(float(v), 2) for v in det.eq],
             "error": error,
         }

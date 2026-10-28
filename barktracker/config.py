@@ -73,6 +73,8 @@ class UiConfig:
     bark_words: bool = True              # red BARK words over the live band when a bark is detected
     day_nap: bool = True                 # show the napping dog in the daytime too when it's quiet...
     day_nap_below_dbfs: float = -50.0    # ...meaning background noise below this level
+    sound_notes: bool = True             # "Hearing a car" on the live band for other recognised sounds...
+    sound_note_min: float = 0.8          # ...when the sound model is at least this sure
 
 
 @dataclass

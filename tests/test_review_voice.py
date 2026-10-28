@@ -88,3 +88,74 @@ def test_voice_profiles_size_and_suggestion(tmp_path):
     c.patch(f"/api/dogs/{small['id']}", json={"size": "small"})
     assert {d["name"]: d for d in c.get("/api/dogs").json()["dogs"]}["Pip"]["size"] == "small"
     app.shutdown()
+
+
+def test_dog_filter_review_split_and_marked(tmp_path):
+    cfg, app, c = setup(tmp_path, [("Big dog", 5), ("Small dog", 5), ("Big dog", 4)])
+    rex = c.post("/api/dogs", json={"name": "Rex", "address": "123 Elm St"}).json()
+    pip = c.post("/api/dogs", json={"name": "Pip", "address": "9 Oak Ave"}).json()
+    eps = sorted(c.get("/api/episodes").json()["items"], key=lambda e: e["start_ts"])
+    assert all(e["marked"] == "auto" for e in eps)
+    c.post(f"/api/episodes/{eps[0]['id']}/label", json={"dog_id": rex["id"]})
+    c.post(f"/api/episodes/{eps[1]['id']}/label", json={"dog_id": pip["id"]})
+    # label just one bark of the third: partly manual
+    b = c.get(f"/api/episodes/{eps[2]['id']}").json()["barks"]
+    c.post("/api/barks/label", json={"bark_ids": [b[0]["id"]], "dog_id": rex["id"]})
+    third = c.get(f"/api/episodes/{eps[2]['id']}").json()
+    assert third["marked"] == "mixed" and third["labelled"] == 1
+    assert c.get(f"/api/episodes/{eps[0]['id']}").json()["marked"] == "manual"
+
+    # review split
+    todo = c.get("/api/episodes?review=todo").json()
+    done = c.get("/api/episodes?review=done").json()
+    assert todo["total"] == 0 and done["total"] == 3
+    c.post(f"/api/episodes/{eps[1]['id']}/label", json={"dog_id": None})      # back to unlabelled
+    c.patch(f"/api/episodes/{eps[1]['id']}", json={"reviewed": False})
+    assert [e["id"] for e in c.get("/api/episodes?review=todo").json()["items"]] == [eps[1]["id"]]
+
+    # dog filter on the main views (the rest of the third episode stays unidentified)
+    with app.store.tx() as cx:
+        cx.execute("UPDATE barks SET pred_dog_id=NULL WHERE episode_id=? AND label_dog_id IS NULL", (eps[2]["id"],))
+    only_rex = c.get(f"/api/episodes?dogs={rex['id']}").json()
+    assert {e["id"] for e in only_rex["items"]} == {eps[0]["id"], eps[2]["id"]}
+    day = c.get(f"/api/day?dogs={rex['id']}").json()
+    full = c.get("/api/day").json()
+    assert {e["id"] for e in day["episodes"]} == {eps[0]["id"], eps[2]["id"]}
+    assert len(day["barks"]) < len(full["barks"])
+    part = next(e for e in day["episodes"] if e["id"] == eps[2]["id"])
+    assert 0 < part["share"] < 1
+    s_all = sum(d["seconds"] for d in c.get("/api/summary?days=2").json()["days"])
+    s_rex = sum(d["seconds"] for d in c.get(f"/api/summary?days=2&dogs={rex['id']}").json()["days"])
+    s_both = sum(d["seconds"] for d in c.get(f"/api/summary?days=2&dogs={rex['id']},u").json()["days"])
+    assert 0 < s_rex < s_both <= s_all + 0.2
+    h_rex = sum(map(sum, c.get(f"/api/heatmap?dogs={rex['id']}").json()["grid"]))
+    h_all = sum(map(sum, c.get("/api/heatmap").json()["grid"]))
+    assert 0 < h_rex < h_all
+    assert c.get("/api/day?dogs=1;DROP").status_code == 400
+    app.shutdown()
+
+
+def test_hearing_note(tmp_path):
+    from types import SimpleNamespace
+    from barktracker.live import LiveMode
+    cfg = Config(data_dir=str(tmp_path))
+    app = BarkApp(cfg, None, start_detector=False)
+    lm = LiveMode(cfg, app.store)
+    now = time.time()
+    det = SimpleNamespace(ep=None, last_bark_wall=0, stats={"barks": 0}, prev_level=-40, floor=-60,
+                          eq=np.zeros(20), history=[(0, -40.0, -60.0)] * 20, heard=(now - 1, "Car", 0.86))
+    assert lm.snapshot(det, now=now)["heard"] == {"label": "Car", "text": "a car", "score": 0.86}
+    det.heard = (now - 1, "Car", 0.6)                  # not sure enough
+    assert lm.snapshot(det, now=now)["heard"] is None
+    det.heard = (now - 1, "Dog", 0.95)                 # the dog itself isn't a note
+    assert lm.snapshot(det, now=now)["heard"] is None
+    det.heard = (now - 1, "Inside, small room", 0.9)   # nor the room tone
+    assert lm.snapshot(det, now=now)["heard"] is None
+    det.heard = (now - 30, "Siren", 0.9)               # too long ago
+    assert lm.snapshot(det, now=now)["heard"] is None
+    det.heard = (now - 1, "Lawn mower", 0.9)
+    cfg.ui.sound_notes = False
+    assert lm.snapshot(det, now=now)["heard"] is None
+    cfg.ui.sound_notes = True
+    assert lm.snapshot(det, now=now)["heard"]["text"] == "a lawn mower"
+    app.shutdown()

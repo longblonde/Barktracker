@@ -422,3 +422,29 @@ body.kiosk main { position: fixed; top: 16px; right: 16px; padding: 0; max-width
 .bk-confirm { flex-wrap: wrap; align-items: center; gap: 8px; }
 .bk-confirm input[type="text"] { width: 12em; flex: 0 0 auto; }
 .bk-confirm input[type="file"] { flex: 0 1 auto; }
+
+/* ---- dog / household filter ---- */
+.dogfilter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0 4px; }
+.dogfilter .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 999px; overflow: hidden; margin-right: 6px; }
+.dogfilter .seg button { border: 0; background: none; padding: 5px 12px; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+.dogfilter .seg button[aria-checked="true"] { background: var(--ink); color: var(--panel); }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink);
+  border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.chip small { color: var(--muted); font-size: 12px; }
+.chip[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); background: var(--faint); }
+.chip:focus-visible, .dogfilter .seg button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.sec-sub { margin: -6px 0 10px; }
+h2 .count { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+
+/* ---- auto / manual flag ---- */
+.mark { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  letter-spacing: .02em; white-space: nowrap; vertical-align: 1px; }
+.mark-auto { border: 1px dashed var(--muted); color: var(--muted); }
+.mark-manual { background: var(--ink); color: var(--panel); }
+.mark-mixed { border: 1px solid var(--ink); color: var(--ink); }
+.ep .state { display: flex; align-items: center; justify-content: flex-end; }
+
+/* ---- "Hearing a car" on the live band ---- */
+.heard { display: inline-block; margin-left: 6px; padding: 1px 9px; border-radius: 999px; font-size: 12px;
+  background: var(--faint); color: var(--ink); white-space: nowrap; }

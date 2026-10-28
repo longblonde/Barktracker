@@ -44,6 +44,8 @@ SPECS = {s.key: s for s in [
     Spec("ui.bark_words", "bool"),
     Spec("ui.day_nap", "bool"),
     Spec("ui.day_nap_below_dbfs", "float", -90, -10),
+    Spec("ui.sound_notes", "bool"),
+    Spec("ui.sound_note_min", "float", 0.3, 0.99),
     Spec("audio.device", "device"),
     Spec("backup.path", "path"),
     Spec("backup.enabled", "bool"),
