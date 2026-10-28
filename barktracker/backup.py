@@ -567,6 +567,12 @@ def apply_pending_restore(cfg: Config) -> dict | None:
             new = cfg.clips_path / _rel_clip(path)
             if str(new) != path:
                 c.execute("UPDATE episodes SET clip_path=? WHERE id=?", (str(new), eid))
+        has_missed = c.execute("SELECT 1 FROM sqlite_master WHERE name='missed'").fetchone()
+        if has_missed:                                   # "I hear barking" captures under review
+            for mid, path in c.execute("SELECT id, clip_path FROM missed WHERE clip_path IS NOT NULL").fetchall():
+                p = Path(path)
+                new = cfg.clips_path / ("missed" if p.parent.name == "missed" else p.parent.name) / p.name
+                c.execute("UPDATE missed SET clip_path=? WHERE id=?", (str(new), mid))
         c.execute("DELETE FROM meta WHERE key=?", (STATUS_KEY,))
         c.commit()
     finally:

@@ -33,6 +33,10 @@ class BarkApp:
         self.defaults = settings_mod.apply_saved(cfg, self.store)   # dashboard overrides
         self._keep_ordinance()
         self.backup = backup_mod.Backup(cfg, self.store, getattr(cfg, "source_file", None))
+        from . import tuning
+        tuning.ensure_schema(self.store)
+        self._tune_clf = None
+        self._tune_lock = threading.Lock()
         self.restart_pending = False
         self.recover()
         ic = cfg.identify
@@ -122,9 +126,106 @@ class BarkApp:
                 log.exception("Refining episode %d failed", eid)
             self.stop.wait(0.2)   # stay gentle on the Pi while catching up
 
+    # ---- "I hear barking" captures ------------------------------------------------------------
+    def capture_missed(self, seconds: float = 30.0, note: str = "") -> int:
+        """Save the last `seconds` of audio for review, then score every sound in it."""
+        from . import tuning
+        if self.detector is None:
+            raise RuntimeError("Not listening, so there's no recent audio to save")
+        cap = self.detector.capture(seconds)
+        if not len(cap["audio"]):
+            raise RuntimeError("No audio yet")
+        from datetime import datetime
+        stamp = datetime.fromtimestamp(cap["start_ts"]).strftime("%Y%m%d_%H%M%S")
+        path = self.cfg.clips_path / "missed" / f"missed_{stamp}.wav"
+        tuning.write_wav(path, cap["audio"])
+        with self.store.tx() as c:
+            mid = c.execute("INSERT INTO missed(created, start_ts, seconds, clip_path, trace, events, note)"
+                            " VALUES (?,?,?,?,?,?,?)",
+                            (time.time(), cap["start_ts"], len(cap["audio"]) / 16000, str(path),
+                             json.dumps(cap["trace"]), json.dumps(cap["events"], default=float), note)).lastrowid
+        threading.Thread(target=self.analyze_missed, args=(mid,), name="analyze-missed", daemon=True).start()
+        return mid
+
+    def analyze_missed(self, mid: int) -> None:
+        from . import tuning
+        from .audio import read_wav
+        from . import features as F
+        r = self.store.q1("SELECT * FROM missed WHERE id=?", (mid,))
+        if not r or not r["clip_path"] or not Path(r["clip_path"]).exists():
+            return
+        try:
+            x, sr = read_wav(r["clip_path"])
+            x = F.resample(x, sr)
+            with self._tune_lock:          # its own model instance: TFLite isn't thread-safe
+                if self._tune_clf is None:
+                    self._tune_clf = make_classifier(self.cfg.detection.mode, self.cfg.detection.model_path)
+                cands = tuning.analyze(x, json.loads(r["trace"] or "[]"), self._tune_clf, self.identifier,
+                                       json.loads(r["events"] or "[]"))
+            with self.store.tx() as c:
+                c.execute("UPDATE missed SET analysis=? WHERE id=?", (json.dumps(cands), mid))
+        except Exception:  # noqa: BLE001
+            log.exception("Analysing capture %d failed", mid)
+
+    def add_missed(self, mid: int, picks: list[int], dog_id: int | None) -> int:
+        """Turn the sounds you marked in a capture into a logged, labelled episode."""
+        from . import features as F
+        from .audio import read_wav
+        from .clips import clip_path_for
+        r = self.store.q1("SELECT * FROM missed WHERE id=?", (mid,))
+        if not r or not r["analysis"]:
+            raise ValueError("That capture isn't ready yet")
+        cands = json.loads(r["analysis"])
+        # sounds the detector already logged live stay in their own episode
+        picks = sorted({int(i) for i in picks if 0 <= int(i) < len(cands) and cands[int(i)].get("live") != "bark"})
+        if not picks:
+            raise ValueError("Select at least one bark")
+        x, sr = read_wav(r["clip_path"])
+        x = F.resample(x, sr)
+        start = r["start_ts"]
+        path = clip_path_for(self.cfg.clips_path, start)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Path(r["clip_path"]).replace(path)
+        chosen = [cands[i] for i in picks]
+        eid = self.store.create_episode(start + chosen[0]["t"], str(path), start)
+        ids = []
+        for c in chosen:
+            on, end = int(c["t"] * F.SR), int(c["end"] * F.SR)
+            seg = x[max(0, on - int(0.03 * F.SR)):max(end, on + int(0.2 * F.SR))]
+            feats = F.bark_features(seg) if len(seg) >= F.N_FFT else None
+            ids.append(self.store.add_bark(eid, start + c["t"], c["end"] - c["t"], c.get("prob") or 0.0,
+                                           c.get("peak"), feats))
+        if dog_id is not None:
+            self.store.label_barks(ids, dog_id)
+        self.store.finish_episode(eid, start + chosen[-1]["end"], len(chosen),
+                                  max(c.get("peak") or -120 for c in chosen),
+                                  max(c.get("prob") or 0 for c in chosen), len(x) / F.SR)
+        # these are your marks: don't let the automatic re-scan replace them
+        self.store.set_episode(eid, reviewed=1, refined=1,
+                               note=(r["note"] + " " if r["note"] else "") + "Added from “I hear barking”.")
+        with self.store.tx() as c:
+            c.execute("UPDATE missed SET status='added', episode_id=?, marked=?, clip_path=? WHERE id=?",
+                      (eid, json.dumps(picks), str(path), mid))
+        self.retrain()                     # learn the labels; guess the dog for unlabelled ones
+        return eid
+
+    def dismiss_missed(self, mid: int) -> None:
+        """No barking in it after all: delete the audio, keep the measurements (they help suggestions)."""
+        r = self.store.q1("SELECT clip_path, status FROM missed WHERE id=?", (mid,))
+        if not r:
+            raise ValueError("No such capture")
+        if r["status"] == "added":
+            raise ValueError("Already added to the log")
+        if r["clip_path"]:
+            Path(r["clip_path"]).unlink(missing_ok=True)
+        with self.store.tx() as c:
+            c.execute("UPDATE missed SET status='dismissed', clip_path=NULL, marked='[]' WHERE id=?", (mid,))
+
     def _maintenance_loop(self):
         while not self.stop.is_set():
             try:
+                from . import tuning
+                tuning.prune(self.store, self.cfg.clips.retention_days)
                 enforce_retention(self.store, self.cfg.clips_path, self.cfg.clips.retention_days,
                                   self.cfg.clips.max_disk_mb)
             except Exception:  # noqa: BLE001

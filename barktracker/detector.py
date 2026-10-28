@@ -32,6 +32,20 @@ FRAME = int(0.05 * F.SR)          # 800 samples
 PRE_ONSET = int(0.25 * F.SR)      # classifier window starts this long before the onset
 POST_ONSET = WINDOW - PRE_ONSET   # ...and needs this much audio after it
 ALT_SHIFT = int(0.2 * F.SR)       # second try with the attack placed later in the window
+RING_SECONDS = 63.0               # recent audio kept in memory: "I hear barking" saves up to 60 s
+NEAR_DB = 6.0                     # a sound this far over the background that never reaches the
+                                  # trigger is logged as "too quiet" for the tuning page
+TUNE_ACTIVE_SECONDS = 15.0        # while the tuning page is open, quiet sounds get scored too
+
+
+def _snap(dq) -> list:
+    """Copy a deque another thread may be appending to."""
+    for _ in range(5):
+        try:
+            return list(dq)
+        except RuntimeError:
+            time.sleep(0.002)
+    return list(dq)
 
 
 @dataclass
@@ -59,8 +73,7 @@ class BarkDetector:
         self.store = store
         self.identifier = identifier
         self.on_episode = on_episode
-        ring_s = 10.0 + 3.0   # max pre-roll (adjustable at runtime) + classifier look-ahead
-        self.ring: collections.deque = collections.deque(maxlen=int(ring_s * F.SR / FRAME) + 2)
+        self.ring: collections.deque = collections.deque(maxlen=int(RING_SECONDS * F.SR / FRAME) + 2)
         self.levels: collections.deque = collections.deque(maxlen=self.ring.maxlen)
         self.carry = np.zeros(0, np.float32)
         self.n = 0                     # absolute index of the next sample to be framed
@@ -83,6 +96,17 @@ class BarkDetector:
         self.last_classify_ms = 0.0
         self.last_bark_wall = 0.0
         self.started = time.time()
+        # tuning page: per-frame spectrogram columns and level/background, and what was decided
+        self.spec: collections.deque = collections.deque(maxlen=self.ring.maxlen)    # (idx, uint8 col)
+        self.trace: collections.deque = collections.deque(maxlen=self.ring.maxlen)   # (idx, level, floor)
+        self.events: collections.deque = collections.deque(maxlen=800)
+        self.event_seq = 0
+        self.near: list | None = None          # [start idx, peak level, floor at start] of a quiet sound
+        self.in_loud = False
+        self.near_pending: list[dict] = []
+        self.last_near_scored = -10 ** 12
+        self.last_near_end = -10 ** 12
+        self.tune_until = 0.0
 
     # ------------------------------------------------------------------ input
     def ts_of(self, idx: int) -> float:
@@ -119,12 +143,15 @@ class BarkDetector:
         self.eq = np.maximum(F.eq_bands(frame), self.eq * 0.55)
         self.ring.append((idx, frame))
         self.levels.append((idx, level))
+        self.spec.append((idx, F.spec_column(frame)))
         self.n += FRAME
         if self.floor is None:
             self.floor = level
+        self.trace.append((idx, round(level, 1), round(self.floor, 1)))
 
         thr = max(self.floor + self.det.trigger_db, self.det.min_level_dbfs)
         trig = level > thr
+        self._track_near(idx, level, trig)
         a = self.det.noise_floor_adapt
         if not trig:
             rate = 0.1 if level < self.floor else a * 0.25
@@ -155,7 +182,10 @@ class BarkDetector:
 
         # classify any onsets that now have enough audio after them
         while self.pending and self.n >= self.pending[0][0] + POST_ONSET:
-            self._classify(self.pending.pop(0)[0])
+            p = self.pending.pop(0)
+            self._classify(p[0], soft=p[1])
+        while self.near_pending and self.n >= self.near_pending[0]["idx"] + POST_ONSET:
+            self._score_near(self.near_pending.pop(0))
 
         if (self.ep is not None and not self.pending
                 and (self.n - self.ep.last_bark_end_idx) / F.SR > self.det.episode_gap):
@@ -173,7 +203,103 @@ class BarkDetector:
         x = np.concatenate(parts)
         return x[max(0, start - first): max(0, start - first) + (end - start)]
 
-    def _classify(self, onset: int) -> None:
+    # ---------------------------------------------------- tuning page support
+    def tuning_active(self) -> bool:
+        return time.time() < self.tune_until
+
+    def _event(self, idx: int, kind: str, **kw) -> dict:
+        """Record a decision for the tuning page (and for 'I hear barking' captures)."""
+        self.event_seq += 1
+        ev = {"id": self.event_seq, "idx": idx, "ts": round(self.ts_of(idx), 3), "kind": kind,
+              "trigger_db": self.det.trigger_db, "min_level": self.det.min_level_dbfs,
+              "threshold": self.det.bark_threshold, **kw}
+        self.events.append(ev)
+        return ev
+
+    def _sound_stats(self, onset: int) -> tuple[float, float]:
+        """Peak level over the next ~0.5 s, and the background just before (what the gate compared)."""
+        peak = max((l for i, l in self.levels if onset - FRAME <= i < onset + int(0.5 * F.SR)), default=-120.0)
+        fl = next((f for i, _, f in reversed(self.trace) if i <= onset), self.floor or -90.0)
+        return round(float(peak), 1), round(float(fl), 1)
+
+    def _track_near(self, idx: int, level: float, trig: bool) -> None:
+        """Sounds that rise over the background but never reach the trigger: the barks a too-strict
+        trigger misses. Logged once each, when the sound ends."""
+        near = level > (self.floor or level) + NEAR_DB
+        if trig:
+            self.in_loud, self.near = True, None
+            return
+        if not near:
+            self.in_loud = False
+            if self.near is not None:
+                start, peak, fl = self.near
+                self.near = None
+                # at least 100 ms long (noise flickers are shorter than a bark), at most 3 s
+                if 2 * FRAME <= idx - start and (idx - start) / F.SR <= 3.0 and start - self.last_near_end >= int(0.3 * F.SR):
+                    self.last_near_end = idx
+                    reason = "below_min_level" if peak <= self.det.min_level_dbfs else "below_trigger"
+                    ev = {"idx": start, "peak": round(peak, 1), "floor": round(fl, 1), "rise": round(peak - fl, 1),
+                          "reason": reason}
+                    if self.tuning_active():
+                        self.near_pending.append(ev)        # score it with the model first
+                    else:
+                        self._event(start, "quiet", **{k: v for k, v in ev.items() if k != "idx"})
+            return
+        if self.in_loud:
+            return                                          # the tail of a sound that did trigger
+        if self.near is None:
+            self.near = [idx, level, self.floor]
+        else:
+            self.near[1] = max(self.near[1], level)
+
+    def _score_near(self, ev: dict) -> None:
+        idx = ev.pop("idx")
+        if idx - self.last_near_scored >= int(0.3 * F.SR):
+            self.last_near_scored = idx
+            win = self._audio(idx - PRE_ONSET, idx + POST_ONSET)
+            if len(win) >= WINDOW // 2:
+                prob, detail = self.classifier.bark_probability(win)
+                alt = self._audio(idx - PRE_ONSET - ALT_SHIFT, idx + POST_ONSET - ALT_SHIFT)
+                if len(alt) >= WINDOW // 2:
+                    p2, d2 = self.classifier.bark_probability(alt)
+                    if p2 > prob:
+                        prob, detail = p2, d2
+                ev.update(prob=round(prob, 3), other=detail.get("other"),
+                          other_score=round(detail.get("other_score", 0.0), 2))
+        self._event(idx, "quiet", **ev)
+
+    def capture(self, seconds: float = 30.0) -> dict:
+        """The last `seconds` of audio plus the levels and decisions over it ("I hear barking")."""
+        snap = _snap
+        frames = snap(self.ring)
+        if not frames:
+            return {"audio": np.zeros(0, np.float32), "start_ts": time.time(), "trace": [], "events": []}
+        want = int(min(seconds, RING_SECONDS - 3) * F.SR / FRAME)
+        frames = frames[-want:]
+        i0 = frames[0][0]
+        trace = [(round((i - i0) / F.SR, 2), l, f) for i, l, f in snap(self.trace) if i >= i0]
+        events = [{**e, "t": round((e["idx"] - i0) / F.SR, 3)} for e in snap(self.events) if e["idx"] >= i0]
+        return {"audio": np.concatenate([f for _, f in frames]), "start_ts": self.ts_of(i0),
+                "trace": trace, "events": events}
+
+    def tune_feed(self, since_idx: int, since_event: int) -> dict:
+        """New spectrogram columns, levels and decisions for the tuning page's live view."""
+        self.tune_until = time.time() + TUNE_ACTIVE_SECONDS
+        cols = [(i, c) for i, c in _snap(self.spec) if i > since_idx]
+        tr = {i: (l, f) for i, l, f in _snap(self.trace) if i > since_idx}
+        return {
+            "first_idx": cols[0][0] if cols else None, "last_idx": cols[-1][0] if cols else since_idx,
+            "cols": b"".join(c.tobytes() for _, c in cols),
+            "levels": [tr.get(i, (None, None)) for i, _ in cols],
+            "events": [e for e in _snap(self.events) if e["id"] > since_event],
+            "base_ts": self.base_ts, "frame": FRAME, "sr": F.SR,
+            "floor": round(self.floor or -90, 1),
+            "trigger_level": round(max((self.floor or -90) + self.det.trigger_db, self.det.min_level_dbfs), 1),
+            "settings": {"trigger_db": self.det.trigger_db, "min_level": self.det.min_level_dbfs,
+                         "threshold": self.det.bark_threshold},
+        }
+
+    def _classify(self, onset: int, soft: bool = False) -> None:
         if onset < self.busy_until:
             return
         win = self._audio(onset - PRE_ONSET, onset + POST_ONSET)
@@ -191,7 +317,12 @@ class BarkDetector:
         if top and score is not None:
             self.heard = (time.time(), top, float(score))   # what else the model recognised (live band note)
         self.stats["classified"] += 1
+        peak0, floor0 = self._sound_stats(onset)
+        info = {"prob": round(prob, 3), "peak": peak0, "floor": floor0, "rise": round(peak0 - floor0, 1),
+                "other": detail.get("other"), "other_score": round(detail.get("other_score", 0.0), 2),
+                "soft": soft}
         if prob < self.det.bark_threshold:
+            self._event(onset, "not_bark", **info)
             return
 
         # The loudness trigger often fires on noise just before the bark, and the classifier only
@@ -212,11 +343,13 @@ class BarkDetector:
         if feats is not None and self.identifier is not None and self.identifier.ready:
             dog, conf = self.identifier.predict_one(feats)
         if dog == NOT_BARK and self.det.suppress_learned_false_positives:
+            self._event(onset, "filtered", **info, conf=round(conf or 0, 2))
             self.stats["suppressed"] += 1
             log.debug("Suppressed learned false positive (conf %.2f)", conf or 0)
             return
 
         self.busy_until = end
+        self._event(onset, "bark", **info, dog=dog, conf=round(conf, 2) if conf is not None else None)
         self.stats["barks"] += 1
         self.last_bark_wall = time.time()
         if self.ep is None:

@@ -23,7 +23,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
 function toast(msg) {
-  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  const t = $("#toast"); t.textContent = msg; t.classList.remove("has-link"); t.classList.add("show");
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 2200);
 }
 function fmtDur(s) {
@@ -196,13 +196,15 @@ function navigate() {
   const [, name = "", arg] = location.hash.split("/");
   route.name = name || "overview"; route.arg = arg;
   if (name === "clip") route.name = "clip";
+  clearTimeout(S.tuneTimer);
   document.querySelectorAll("[data-nav]").forEach((a) => a.toggleAttribute("aria-current", false));
-  const navName = route.name === "clip" ? "clips" : route.name;
+  const navName = route.name === "clip" ? "clips" : route.name === "missed" ? "tune" : route.name;
   $(`[data-nav="${navName}"]`)?.setAttribute("aria-current", "page");
   player.pause(); resetBtn();
   document.body.classList.toggle("kiosk", route.name === "live");
   if (route.name === "ordinance" || route.name === "system") { location.replace(`#/settings/${route.name === "ordinance" ? "code" : "system"}`); return; }
-  ({ overview: renderOverview, clips: renderClips, clip: renderClip, dogs: renderDogs, report: renderReport, settings: renderSettings, live: renderLive }[route.name] || renderOverview)();
+  ({ overview: renderOverview, clips: renderClips, clip: renderClip, dogs: renderDogs, report: renderReport, settings: renderSettings, live: renderLive,
+     tune: renderTune, missed: renderMissed }[route.name] || renderOverview)();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", navigate);
@@ -816,7 +818,7 @@ async function renderSettings() {
     <section><h1>Settings</h1><p class="sub">Changes take effect right away and are kept on this Pi.</p></section>
     <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}">${t}</a>`).join("")}</nav>
     ${SETTINGS_SECTIONS.map(([id]) => `<div class="settings-sec" id="sec-${id}"></div>`).join("")}
-    <footer class="version">Barktracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
+    <footer class="version">BarkTracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
   drawStorage(st); drawDetection(st); drawCode(ord); drawOrdinance(ord); S.values = st.values; drawPictures(media); drawNotify(st); drawSystem(st); drawBackup();
   if (route.arg) $(`#sec-${route.arg}`)?.scrollIntoView();
 }
@@ -896,14 +898,14 @@ async function drawBackup() {
   const v = b.settings, last = b.last || {}, res = last.last_result;
   const run = b.running, rest = b.restore;
   let state;
-  if (b.restart_pending || b.pending_restore) state = `<div class="notice">A restore is staged${b.pending_restore ? ` (${esc(b.pending_restore.snapshot)})` : ""}. ${b.restart_pending ? "Barktracker is restarting to finish it…" : "Restart Barktracker to finish: <code>sudo systemctl restart barktracker</code>"}</div>`;
+  if (b.restart_pending || b.pending_restore) state = `<div class="notice">A restore is staged${b.pending_restore ? ` (${esc(b.pending_restore.snapshot)})` : ""}. ${b.restart_pending ? "BarkTracker is restarting to finish it…" : "Restart BarkTracker to finish: <code>sudo systemctl restart barktracker</code>"}</div>`;
   else if (run) state = `<p class="bk-state busy">Backing up: ${esc(run.step)}${run.total ? ` (${run.done} of ${run.total})` : ""}…</p>`;
   else if (!v["backup.path"]) state = `<p class="bk-state">No backup drive set yet. Your log, labels and recordings live only on the SD card.</p>`;
   else if (last.last_error) state = `<p class="bk-state bad"><strong>Last backup failed</strong> ${fmtWhen(last.last_try)}: ${esc(last.last_error)}</p>`;
   else if (last.last_ok) state = `<p class="bk-state good"><strong>Backed up</strong> ${fmtWhen(last.last_ok)}${res ? `: ${res.episodes} episodes, ${res.labelled_barks} labelled barks, ${res.clip_files} recordings (${gbs(res.clips_mb)})` : ""}.${b.enabled && b.next_due ? ` Next one ${fmtWhen(Math.max(b.next_due, Date.now() / 1000))}.` : ""}</p>`;
   else state = `<p class="bk-state">Not backed up yet.${b.target.ok ? " The first backup runs within a few minutes, or press Back up now." : ""}</p>`;
   const lr = b.last_restore;
-  const drives = (b.drives || []).map((d) => `<li><button type="button" class="linkish" data-path="${esc(d.path)}">${esc(d.path)}</button> <span class="muted">${esc(d.label || d.device)}, ${esc(d.fs)}, ${gbs(d.free_mb)} free of ${gbs(d.total_mb)}${d.same_disk ? ", same disk as the SD card" : ""}${d.has_backup ? ", has a Barktracker backup" : ""}</span></li>`).join("");
+  const drives = (b.drives || []).map((d) => `<li><button type="button" class="linkish" data-path="${esc(d.path)}">${esc(d.path)}</button> <span class="muted">${esc(d.label || d.device)}, ${esc(d.fs)}, ${gbs(d.free_mb)} free of ${gbs(d.total_mb)}${d.same_disk ? ", same disk as the SD card" : ""}${d.has_backup ? ", has a BarkTracker backup" : ""}</span></li>`).join("");
 
   el.innerHTML = `<div class="panel form">
     <h2>Backup and restore</h2>
@@ -928,7 +930,7 @@ async function drawBackup() {
     </form>
 
     <h3 class="bk-h">Restore</h3>
-    <p class="small muted intro">On a new Pi: install Barktracker, plug in the backup drive, then restore here. This replaces the current log with the backup's; the current database is kept in the data folder in case you need it.</p>
+    <p class="small muted intro">On a new Pi: install BarkTracker, plug in the backup drive, then restore here. This replaces the current log with the backup's; the current database is kept in the data folder in case you need it.</p>
     <div class="bk-restore">
       <span class="bk-path"><input type="text" id="rsPath" value="${esc(v["backup.path"] || (b.drives || []).find((d) => d.has_backup)?.path || "")}" placeholder="/mnt/barktracker-backup" spellcheck="false"><button type="button" class="btn" id="rsFind">Look for backups</button></span>
       <div id="rsOut">${rest?.error ? `<p class="bk-state bad">${esc(rest.error)}</p>` : rest ? `<p class="bk-state busy">Restoring: ${esc(rest.step)}${rest.total ? ` (${rest.done} of ${rest.total})` : ""}…</p>` : ""}</div>
@@ -987,7 +989,7 @@ async function findBackups() {
   const snaps = info.snapshots.map((s, i) => `<label class="check bk-snap"><input type="radio" name="rsSnap" value="${esc(s.name)}" ${i === 0 && !s.error ? "checked" : ""} ${s.error ? "disabled" : ""}>
       <span><strong>${fmtWhen(s.ts)}</strong> ${s.error ? `<span class="bad">${esc(s.error)}</span>` : `<span class="muted">${s.episodes} episodes${s.first_ts ? ` from ${fmtDay(s.first_ts)}` : ""}, ${s.dogs} dog${s.dogs === 1 ? "" : "s"}, ${s.labelled_barks} labelled barks, ${s.clips} recordings, ${s.mb} MB</span>`}</span></label>`).join("");
   $("#rsOut").innerHTML = `<div class="bk-found">
-    <p class="small">Backup from <strong>${esc(info.hostname || "another Pi")}</strong>${info.version ? ` (Barktracker ${esc(info.version)})` : ""}, ${info.clip_files} recordings (${gbs(info.clips_mb)}). Choose a copy:</p>
+    <p class="small">Backup from <strong>${esc(info.hostname || "another Pi")}</strong>${info.version ? ` (BarkTracker ${esc(info.version)})` : ""}, ${info.clip_files} recordings (${gbs(info.clips_mb)}). Choose a copy:</p>
     ${snaps}
     <label class="check"><input type="checkbox" id="rsClips" ${info.clip_files ? "checked" : "disabled"}> Copy the recordings to this Pi too</label>
     <div class="row bk-confirm"><input type="text" id="rsConfirm" placeholder="Type RESTORE" aria-label="Type RESTORE to confirm"><button type="button" class="btn danger" id="rsGo">Restore and restart</button></div>
@@ -1023,7 +1025,7 @@ function pollBackup() {
 function waitForRestart(restarting) {
   const out = $("#rsOut");
   if (!restarting) { drawBackup(); return; }
-  if (out) out.innerHTML = `<p class="bk-state busy">Restarting Barktracker with the restored data…</p>`;
+  if (out) out.innerHTML = `<p class="bk-state busy">Restarting BarkTracker with the restored data…</p>`;
   let wentDown = false;
   const tick = async () => {
     try {
@@ -1134,7 +1136,7 @@ function drawOrdinance(r) {
 function drawPictures(media) {
   const v = S.values || {};
   const m = { ...media, barkWords: v["ui.bark_words"] !== false, dayNap: v["ui.day_nap"] !== false, dayNapBelow: v["ui.day_nap_below_dbfs"],
-              soundNotes: v["ui.sound_notes"] !== false, soundMin: v["ui.sound_note_min"] ?? 0.8 };
+              soundNotes: v["ui.sound_notes"] !== false, soundMin: v["ui.sound_note_min"] ?? 0.8, iconColor: v["ui.bark_icon_color"] || "#d4252a" };
   const col = (kind, title, help) => {
     const items = m[kind], own = items.some((i) => i.own);
     return `<div class="piccol">
@@ -1154,6 +1156,7 @@ function drawPictures(media) {
         <span class="help" id="ambNow">Background noise right now: measuring…</span></label>
       <label class="check"><input type="checkbox" name="ui.sound_notes" ${m.soundNotes ? "checked" : ""}> Name other sounds the Pi recognizes, like “Hearing a car”</label>
       <label>Only when the sound model is at least<span class="unit"><input type="number" name="ui.sound_note_min" value="${Math.round(m.soundMin * 100)}" min="30" max="99" step="1" required>% sure</span></label>
+      <label class="colorpick">Browser tab icon while barking<span class="unit"><input type="color" name="ui.bark_icon_color" value="${esc(m.iconColor)}"> the dog turns this color, and the tab title reads “BarkTracker - Barking Detected”</span></label>
       <button class="btn" type="submit">Save</button>
     </form>
     <div class="three">
@@ -1168,8 +1171,10 @@ function drawPictures(media) {
     try {
       const st = await api("/api/settings", { method: "PUT", body: { values: {
         "ui.day_nap": f.elements["ui.day_nap"].checked, "ui.day_nap_below_dbfs": f.elements["ui.day_nap_below_dbfs"].value,
-        "ui.sound_notes": f.elements["ui.sound_notes"].checked, "ui.sound_note_min": Number(f.elements["ui.sound_note_min"].value) / 100 } } });
+        "ui.sound_notes": f.elements["ui.sound_notes"].checked, "ui.sound_note_min": Number(f.elements["ui.sound_note_min"].value) / 100,
+        "ui.bark_icon_color": f.elements["ui.bark_icon_color"].value } } });
       S.values = st.values;
+      Beat.setPrefs({ iconColor: st.values["ui.bark_icon_color"] });
       toast("Live band settings saved");
     } catch (err) { toast(err.message); }
   };
@@ -1501,6 +1506,7 @@ const Beat = (() => {
       heard.hidden = !h;
       if (h) { heard.textContent = `Hearing ${h.text}`; heard.title = `The sound model is ${Math.round(h.score * 100)}% sure: “${h.label}”`; }
     }
+    tabState(l.mode === "bark" && l.state !== "off");
     const started = l.state === "barking" && prevState !== "barking";
     if (lastBarks !== null && l.barks > lastBarks) spawn(l.barks - lastBarks + (started ? 2 : 0));
     else if (started) spawn(3);
@@ -1623,14 +1629,36 @@ const Beat = (() => {
   }
 
   // ---- display preferences (stored on the Pi, shared by every screen)
-  let prefs = { barkWords: true };
+  let prefs = { barkWords: true, iconColor: "#d4252a" };
   async function loadPrefs() {
-    try { const st = await api("/api/settings"); prefs.barkWords = st.values["ui.bark_words"] !== false; } catch (_) { /* keep defaults */ }
+    try {
+      const st = await api("/api/settings");
+      prefs.barkWords = st.values["ui.bark_words"] !== false;
+      prefs.iconColor = st.values["ui.bark_icon_color"] || prefs.iconColor;
+    } catch (_) { /* keep defaults */ }
   }
-  function setPrefs(p) { Object.assign(prefs, p); if (!prefs.barkWords) splash.replaceChildren(); }
+  function setPrefs(p) { Object.assign(prefs, p); if (!prefs.barkWords) splash.replaceChildren(); if ("iconColor" in p) { iconState = null; tabState(lastBarking); } }
+
+  // ---- browser tab: the icon's dog turns the barking color and the title says so
+  const LOGO_D = "M10.92,30.42c-3.89,1.44-7.65,2.04-10.92-1.12l.03-.31c.22,0,.43-.02.65,0,4.1.48,7.82-.56,10.9-3.24,3.04-2.64,6.54-3.89,10.43-4.48,3.18-.48,6.13-1.64,8.73-3.62.19-.15.65-.15.87-.03,3.12,1.83,6.4,3.23,9.93,4.05.23.05.57.35.57.55.08,2.2.18,4.41-.56,6.55-.8,2.3-2.18,4.15-4.17,5.57-.36.26-.72.79-.75,1.22-.17,2.53-.23,5.08-.34,7.61-.03.61.15,1,.76,1.25.84.35,1.32,1.03,1.47,1.94.1.6-.05.94-.74.92-.87-.03-1.75.01-2.62-.01-1.08-.03-1.46-.35-1.7-1.41-.73-3.2-1.45-6.4-2.14-9.6-.14-.67-.41-.92-1.15-1.03-2.71-.39-5.41-.92-8.11-1.39-.13-.02-.25-.06-.38-.07-.71-.07-1.53-.37-2.11-.12-.5.22-.73,1.07-1.07,1.65-.73,1.27-1.73,2.29-2.97,3.07-.33.2-.64.47-1,.57-2.57.75-2.98,2.92-3.35,5.09-.04.22.28.62.54.75.76.39,1.2.94,1.24,1.79.02.44-.13.71-.59.7-1.2-.03-2.41-.04-3.61-.11-.67-.04-1.04-.47-.97-1.14.21-2.35.43-4.7.73-7.04.06-.48.43-1.01.8-1.34,1.53-1.36,2.19-2.98,1.81-5.02-.13-.7-.14-1.42-.22-2.22Z M20.82,47.12c-2.51-.02-2.45.24-3.43-2.34-.56-1.48-1.13-2.97-1.71-4.44-.21-.53-.11-.9.41-1.22,1.58-.96,2.77-2.28,3.5-3.98.23-.53.55-.68,1.08-.58.83.16,1.66.32,2.5.45.52.08.55.33.35.75-.61,1.34-1.5,2.48-2.76,3.23-1.16.7-1.4,1.58-.97,2.77.12.34.2.69.27,1.04.18.91.41,1.67,1.56,1.86.75.12,1.22.79,1.4,1.59.13.58,0,.89-.66.86-.51-.02-1.03,0-1.54,0Z M40.58,32.78c-.08,2.51-.16,4.88-.24,7.26-.03,1-.04,2-.09,3-.03.54.2.84.7,1.05,1.07.45,1.62,1.28,1.67,2.45.02.4-.13.57-.52.56-.67,0-1.33,0-2,.02-.45,0-.61-.18-.65-.64-.09-1.18-.69-2.05-1.66-2.72-.28-.19-.54-.65-.54-.98.04-2.28.16-4.56.27-6.84.01-.24.1-.54.26-.69.88-.81,1.79-1.58,2.81-2.47Z M49.23,11.44c-1.12-.11-2.25-.21-3.37-.32-.89-.09-1.01-.32-.49-1.05.95-1.34,1.93-2.66,2.87-4.01.23-.33.36-.72.56-1.13-.26-.72-.46-1.44-.78-2.1-.4-.85-.68-.94-1.52-.51-1.25.65-2.49,1.33-3.69,2.06-.62.38-1.18.5-1.87.23-1.08-.42-2.18-.36-3.2.21-.65.36-1.29.76-1.84,1.25-.57.51-1.08.54-1.74.24-1.24-.56-2.5-1.07-3.75-1.6-.51-.21-.83-.12-.68.52.13.55.18,1.15.46,1.61.84,1.4,1.8,2.73,2.65,4.13.21.35.35.86.27,1.25-.15.8-.41,1.59-.71,2.35-.25.62-.14.96.46,1.29,2.62,1.43,5.33,2.63,8.24,3.36,1.32.34,1.36.35,1.6-1.01.4-2.21,1.69-3.49,3.88-3.91.63-.12,1.26-.25,1.87-.42.74-.21,1.24-.71,1.46-1.45.21-.72.07-.93-.68-1ZM39.62,8.4c-.56,0-1.01-.45-1.01-1.01s.45-1.01,1.01-1.01,1.01.45,1.01,1.01-.45,1.01-1.01,1.01Z";
+  const favicon = document.getElementById("favicon");
+  let iconState = null, lastBarking = false;
+  function tabState(barking) {
+    lastBarking = barking;
+    const want = barking ? prefs.iconColor : "#1d2833";
+    if (favicon && iconState !== want) {
+      iconState = want;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#ffffff"/><g transform="translate(2 2.5) scale(1.2)"><path fill="${want}" fill-rule="evenodd" d="${LOGO_D}"/></g></svg>`;
+      favicon.href = "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+    const t = barking ? "BarkTracker - Barking Detected" : "BarkTracker";
+    if (document.title !== t) document.title = t;
+  }
 
   function start() {
     loadPrefs(); loadMedia(); connect();
+    const hb = document.getElementById("hearBtn");
+    if (hb) hb.onclick = () => hearBarking(30);
     if (reduce.matches) setInterval(() => frame(performance.now()), 250); else requestAnimationFrame(frame);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) disconnect(); else { last = performance.now(); connect(); }

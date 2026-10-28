@@ -53,6 +53,7 @@ ui:
   day_nap_below_dbfs: -50      # ...meaning background noise below this level
   sound_notes: true            # "Hearing a car" on the live band for other recognized sounds...
   sound_note_min: 0.8          # ...when the sound model is at least this sure
+  bark_icon_color: "#d4252a"   # browser-tab icon dog color while barking
 
 backup:
   path: null                   # USB drive folder, e.g. /mnt/barktracker-backup (scripts/setup-usb-backup.sh)

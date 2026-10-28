@@ -42,7 +42,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px 24px; padding: 14px 24px;
   border-bottom: 1px solid var(--rule); background: var(--panel); position: sticky; top: 0; z-index: 5;
 }
-.mark { font: 700 22px/1 var(--display); letter-spacing: -0.02em; text-decoration: none; }
+.brand { display: inline-flex; align-items: center; gap: 9px; font: 800 27px/1 var(--display); letter-spacing: -0.025em;
+  text-decoration: none; color: var(--ink); }
+.brand-logo { width: 36px; height: 36px; flex: none; margin-top: -4px; }
+@media (max-width: 640px) { .brand { font-size: 23px; } .brand-logo { width: 30px; height: 30px; } }
 .top nav { display: flex; gap: 4px; flex: 1; }
 .top nav a {
   text-decoration: none; padding: 6px 10px; border-radius: var(--radius-sm); color: var(--muted);
@@ -172,6 +175,8 @@ audio { width: 100%; margin-top: 12px; }
   pointer-events: none;
 }
 .toast.show { opacity: 1; }
+.toast.has-link { pointer-events: auto; }
+.toast a { color: inherit; font-weight: 600; margin-left: 6px; }
 
 /* ---- dogs ---- */
 .dogcard { display: grid; grid-template-columns: 44px 1fr auto; gap: 14px; align-items: center; padding: 14px; border-top: 1px solid var(--faint); }
@@ -476,3 +481,64 @@ h2 .count { font-size: 13px; font-weight: 500; color: var(--muted); margin-left:
 .conf-hi { background: var(--faint); }
 .conf-mid { border-style: dashed; }
 .conf-lo { border-style: dashed; color: var(--muted); }
+.colorpick input[type="color"] { width: 44px; height: 32px; padding: 2px; border: 1px solid var(--rule); border-radius: var(--radius-sm); background: var(--panel); }
+
+/* ---- live band: "I hear barking" ---- */
+.beat-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.hear-btn { flex: none; font-size: 13px; padding: 4px 10px; }
+body.kiosk .beat-row { flex-direction: column; align-items: center; }
+@media (max-width: 640px) { .beat-row { flex-direction: column; gap: 4px; } .hear-btn { font-size: 12px; padding: 3px 8px; } }
+
+/* ---- tuning ---- */
+:root { --ok-bark: #2e9e5b; }
+@media (prefers-color-scheme: dark) { :root { --ok-bark: #4cc27a; } }
+.tune-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; }
+.tune-head .sub { max-width: 62ch; }
+.hear { display: grid; gap: 6px; justify-items: end; }
+.btn.big { font-size: 17px; padding: 12px 22px; }
+.tl-panel { padding-bottom: 14px; }
+.tl { position: relative; display: grid; gap: 0; margin-top: 8px; }
+.tl-spec { width: 100%; height: 150px; display: block; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: #0f1418; }
+.tl-lane { position: relative; height: 30px; background: var(--faint); overflow: hidden; }
+.tl-level { width: 100%; height: 110px; display: block; background: var(--panel); border: 1px solid var(--faint); border-top: 0;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+.miss-level { height: 80px; margin-top: 2px; border: 1px solid var(--faint); border-radius: var(--radius-sm); }
+.tl-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 3px; }
+.tag-ev { position: absolute; top: 5px; transform: translateX(-50%); height: 20px; padding: 0 6px; font: 600 11px/18px var(--body);
+  border-radius: 999px; border: 1px solid var(--c); background: var(--panel); color: var(--ink); white-space: nowrap; cursor: pointer; }
+.tag-ev.k-bark { background: var(--c); color: #fff; }
+.tag-ev.k-quiet, .tag-ev.k-unscored { border-style: dashed; color: var(--muted); }
+.tag-ev.k-filtered { color: var(--danger); }
+.tag-ev.sel { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--ink); z-index: 2; }
+.tag-ev.dot { width: 12px; height: 12px; top: 9px; padding: 0; font-size: 0; }
+.tag-ev.changed { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--caution); }
+.tag-ev:focus-visible { outline: 2px solid var(--focus); }
+.tl-legend { margin-top: 10px; }
+.tl-legend .ln { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: 3px; margin-right: 5px; }
+.ln-level { border-color: var(--ink) !important; }
+.ln-floor { border-color: var(--muted) !important; border-top-style: dashed !important; }
+.ln-trig { border-color: var(--caution) !important; }
+.ln-min { border-color: var(--danger) !important; border-top-style: dotted !important; }
+.tl-detail { margin-top: 10px; min-height: 3.2em; font-size: 14px; display: grid; gap: 2px; }
+.kind-pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 0 8px; border-radius: 999px; border: 1px solid var(--c); margin-left: 4px; }
+.tune-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 860px) { .tune-grid { grid-template-columns: 1fr; } }
+.wi-row { display: grid; gap: 2px; margin-bottom: 10px; }
+.wi-ctl { display: flex; align-items: center; gap: 10px; }
+.wi-ctl input { flex: 1; }
+.wi-ctl output { min-width: 5.5em; font-variant-numeric: tabular-nums; font-weight: 600; }
+.wi-actions { flex-wrap: wrap; gap: 8px; align-items: center; }
+.sug-list { margin: 6px 0 8px; padding-left: 18px; }
+.cand { position: absolute; top: 0; height: 100%; border: 0; border-left: 2px solid var(--c); padding: 0; cursor: pointer;
+  background: color-mix(in srgb, var(--c) 16%, transparent); }
+.cand.k-quiet { border-left-style: dashed; }
+.cand[aria-pressed="true"] { background: color-mix(in srgb, var(--ok-bark) 45%, transparent); outline: 2px solid #fff; outline-offset: -2px; }
+.cand.logged { border-left-width: 3px; }
+.cand[data-ro] { cursor: default; }
+.tablewrap { overflow-x: auto; }
+.cand-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cand-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+.cand-table td { padding: 6px 8px; border-bottom: 1px solid var(--faint); vertical-align: top; }
+.cand-table td.num, .cand-table td:nth-child(-n+2) { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cand-table tr.sel td { background: color-mix(in srgb, var(--ok-bark) 10%, transparent); }
+.pool-row .state.new { color: var(--ink); font-weight: 600; }

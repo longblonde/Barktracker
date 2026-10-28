@@ -690,6 +690,113 @@ def create_app(bark: BarkApp) -> FastAPI:
         out["restarting"] = bark.restart()
         return out
 
+    # ---- tuning: live decisions, "I hear barking" captures, suggestions -----------------
+    from . import tuning as T
+
+    def what_if(trigger_db: float | None, min_level: float | None, threshold: float | None) -> dict:
+        return T.settings_from(cfg, trigger_db, min_level, threshold)
+
+    @app.get("/api/tuning/feed")
+    def tuning_feed(since_idx: int = -1, since_event: int = 0):
+        det = bark.detector
+        if det is None:
+            return {"listening": False, "settings": T.current_settings(cfg)}
+        f = det.tune_feed(since_idx, since_event)
+        f["cols"] = base64.b64encode(f["cols"]).decode()
+        return {"listening": True, **f, "rows": F.SPEC_ROWS,
+                "pending_review": store.q1("SELECT COUNT(*) n FROM missed WHERE status='new'")["n"]}
+
+    @app.post("/api/missed")
+    def capture_missed(body: dict = Body(default={})):
+        seconds = float(body.get("seconds") or 30)
+        if not 5 <= seconds <= 60:
+            raise HTTPException(400, "Choose between 5 and 60 seconds")
+        try:
+            mid = bark.capture_missed(seconds, str(body.get("note") or "")[:500])
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        return {"id": mid}
+
+    @app.get("/api/missed")
+    def list_missed(status: str | None = None):
+        sql, args = "SELECT * FROM missed", []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        rows = store.q(sql + " ORDER BY created DESC LIMIT 200", args)
+        s = T.current_settings(cfg)
+        return {"items": [{k: v for k, v in T.row_view(r, s).items() if k != "candidates"} for r in rows],
+                "counts": {r["status"]: r["n"] for r in store.q("SELECT status, COUNT(*) n FROM missed GROUP BY status")}}
+
+    def get_missed(mid: int) -> dict:
+        r = store.q1("SELECT * FROM missed WHERE id=?", (mid,))
+        if not r:
+            raise HTTPException(404, "capture not found")
+        return r
+
+    @app.get("/api/missed/{mid}")
+    def missed_detail(mid: int, trigger_db: float | None = None, min_level: float | None = None,
+                      threshold: float | None = None):
+        r = get_missed(mid)
+        s = what_if(trigger_db, min_level, threshold)
+        out = T.row_view(r, s)
+        out["trace"] = json.loads(r["trace"] or "[]")
+        out["settings"], out["current"] = s, T.current_settings(cfg)
+        nxt = store.q1("SELECT id FROM missed WHERE status='new' AND id!=? ORDER BY created DESC LIMIT 1", (mid,))
+        out["next_new"] = nxt["id"] if nxt else None
+        return out
+
+    @app.get("/api/missed/{mid}/audio")
+    def missed_audio(mid: int):
+        r = get_missed(mid)
+        if not r["clip_path"] or not Path(r["clip_path"]).exists():
+            raise HTTPException(404, "audio not available")
+        return FileResponse(r["clip_path"], media_type="audio/wav", content_disposition_type="inline")
+
+    @app.get("/api/missed/{mid}/spectrogram")
+    def missed_spec(mid: int, width: int = 900, height: int = 80):
+        r = get_missed(mid)
+        if not r["clip_path"] or not Path(r["clip_path"]).exists():
+            raise HTTPException(404, "audio not available")
+        x, sr = read_wav(r["clip_path"])
+        x = F.resample(x, sr)
+        img, secs = F.spectrogram_image(x, width=max(100, min(width, 2000)), height=max(32, min(height, 160)))
+        return {"width": img.shape[1], "height": img.shape[0], "seconds": secs,
+                "data": base64.b64encode(img[::-1].tobytes()).decode()}
+
+    @app.post("/api/missed/{mid}/add")
+    def add_missed(mid: int, body: dict = Body(...)):
+        get_missed(mid)
+        dog_id = body.get("dog_id")
+        _check_dog(dog_id)
+        try:
+            eid = bark.add_missed(mid, body.get("candidates") or [], dog_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"episode_id": eid}
+
+    @app.post("/api/missed/{mid}/dismiss")
+    def dismiss_missed(mid: int):
+        get_missed(mid)
+        try:
+            bark.dismiss_missed(mid)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    @app.delete("/api/missed/{mid}")
+    def delete_missed(mid: int):
+        r = get_missed(mid)
+        if r["status"] != "added" and r["clip_path"]:
+            Path(r["clip_path"]).unlink(missing_ok=True)
+        with store.tx() as c:
+            c.execute("DELETE FROM missed WHERE id=?", (mid,))
+        return {"ok": True}
+
+    @app.get("/api/tuning/suggest")
+    def tuning_suggest():
+        return T.suggest(store, cfg)
+
     # ---- heartbeat: live state + idle/bark pictures -------------------------------
     livemode = LiveMode(cfg, store)
 

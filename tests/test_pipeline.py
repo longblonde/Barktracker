@@ -138,3 +138,34 @@ def test_yamnet_loads_and_scores():
     assert clf.name == "yamnet"
     p, d = clf.bark_probability(np.zeros(15600, np.float32))
     assert p < 0.2 and "top" in d
+
+
+def test_detector_records_decisions_and_capture(tmp_path):
+    import time as _t
+    from barktracker.app import BarkApp
+    from barktracker.classifier import HeuristicClassifier
+    from barktracker.config import Config
+    from barktracker.detector import BarkDetector
+    from barktracker import synth
+    import numpy as np
+    cfg = Config(data_dir=str(tmp_path))
+    app = BarkApp(cfg, None, start_detector=False)
+    det = BarkDetector(cfg, HeuristicClassifier(), app.store)
+    det.tune_until = _t.time() + 60                       # as if the tuning page were open
+    rng = np.random.default_rng(2)
+    x = synth.scene(synth.bout(2.0, "Big dog", 4, rng=rng), 14.0, seed=3)
+    quiet = synth.bark(rng=rng) * 0.006                    # a faint bark that shouldn't trigger
+    x[int(11 * 16000):int(11 * 16000) + len(quiet)] += quiet
+    det.feed(x, _t.time() - 14)
+    det.flush()
+    kinds = [e["kind"] for e in det.events]
+    assert kinds.count("bark") == 4
+    q = [e for e in det.events if e["kind"] == "quiet"]
+    assert q and all(e["rise"] < cfg.detection.trigger_db for e in q if e["reason"] == "below_trigger")
+    assert any("prob" in e for e in q)                     # scored while tuning
+    cap = det.capture(10)
+    assert abs(len(cap["audio"]) / 16000 - 10) < 0.1 and cap["trace"] and cap["events"]
+    assert all(0 <= e["t"] <= 10.1 for e in cap["events"])
+    feed = det.tune_feed(-1, 0)
+    assert len(feed["cols"]) == 64 * len(feed["levels"]) and feed["events"]
+    app.shutdown()

@@ -1,4 +1,4 @@
-# Barktracker
+# BarkTracker
 
 A Raspberry Pi 4 that listens for barking, logs when it happens and for how long, saves a clip of each episode, and learns to tell dogs apart. When a neighbor's dog is the problem, it turns the log into a clean, printable complaint report (or CSV) that cites your local noise ordinance. Everything runs on the Pi; the dashboard is a web page on your home network.
 
@@ -11,6 +11,8 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 - **Clips for review.** Each episode is saved as a WAV with 2 s of lead-in and lead-out. The clip page shows a spectrogram with every bark marked; click a bark to hear it alone.
 - **Which dog.** Label a few barks per dog in the dashboard and new barks are matched to the closest voice automatically. Mark false alarms as "Not a bark" and similar sounds get ignored from then on.
 - **Live band on every page.** A picture that matches what's happening (a napping dog during quiet hours, a sitting dog in the daytime or when there's noise without barking, a barking dog the moment a bark is detected) next to a live EQ of the microphone, labelled in Hz (100 Hz to 7 kHz, log scale; most barks sit between 300 Hz and 3.5 kHz). Each column's top cell is the bright peak and the stack under it is half strength, so the tops read as a line of sound; bars fall with gravity and peaks hang briefly. It's monotone in the site's colors normally and switches to caution yellow while a dog is barking, with optional red BARK words popping in at random sizes and angles. It updates 6 times a second while quiet and 20 while barking. When the sound model recognizes something else with at least 80% certainty, a small note names it ("Hearing a car", "Hearing a lawn mower", "Hearing people talking"). Use your own photos, GIFs or video loops. Click the picture for a full-screen view you can leave on a spare screen or tablet.
+- **Tuning page.** A live, scrolling spectrogram with the sound level, background and trigger lines, and a tag on every sound the detector considered saying what it decided and why. Press **I hear barking** (there, or in the live band on any page) when the Pi misses barking and the last 15 to 60 seconds are saved for review; mark the missed barks to add them to the log under the right dog, and the page suggests settings that would have caught them.
+- **Browser tab.** The tab icon's dog turns red (or a color you pick) and the title reads "BarkTracker - Barking Detected" while barking is happening.
 - **Dashboard.** Plain-language daily summary, a 24-hour timeline coloured by dog, two-week totals, an hour-by-weekday heatmap, clip list with filters.
 - **Your local ordinance.** Enter the animal-noise rule that applies where you live (start from a city preset such as Burnsville, MN, or type in your own) and the criteria for incidents worth reporting: sustained barking, barking in quiet hours, frequent days, habitual patterns.
 - **Complaint reports.** Per dog or per neighbor's household, for any date range: print or save as PDF, download a clean CSV, or download every clip plus the CSVs as a zip for evidence.
@@ -139,6 +141,24 @@ mic ─► 50 ms frames ─► noise floor tracker + onset gate
 - Without YAMNet (32-bit OS, no runtime) a simple acoustic detector is used. It catches barks but also some claps, door slams and fireworks; the "Not a bark" filter helps.
 - **Voice profiles.** Each dog's card shows its typical bark pitch, tone (brightness), bark length and spectral shape from its confirmed barks, and how often the Pi tells it apart from your other dogs (checked against your own labels).
 - Dog matching uses a per-bark voice descriptor (spectral shape, brightness, pitch, length) and a nearest-neighbour vote over your labels. It works well for dogs that sound different (big vs. small, different breeds). Two dogs of the same breed and size will often stay unidentified; that's a limit of the audio, not something more labels fully fix.
+
+## Tuning: when the Pi misses barking
+
+Every sound passes three checks before it's logged as a bark:
+
+1. **Loud enough.** It rises "Loudness trigger" dB over the background and is louder than "Ignore sounds quieter than".
+2. **Bark-like.** The sound model is at least "Bark confidence needed" sure it's barking (yips count).
+3. **Not a known false alarm.** It doesn't match the clips you marked "Not a bark".
+
+The **Tuning** page shows the last minute live: a spectrogram, the level against the background and trigger lines, and a tag for every sound the detector considered: counted (green), too quiet (dashed, with how far over the background it got), not bark-like enough (with the score, or what it sounded like instead) or filtered. Point at or tap a tag for the reason in plain words. While the page is open, sounds that were too quiet are also scored by the sound model, so you can see whether a quieter dog would pass the other checks.
+
+**Try settings** sliders recolor the tags to show what other settings would have counted, before you save anything. **Use these settings** applies them immediately.
+
+**I hear barking.** When you hear barking the Pi didn't log, press the button on the Tuning page or in the live band. The last 15, 30 or 60 seconds are saved as a capture. Open it from **Captures to review**: every sound in it is listed with its level, how far it rose over the background, its bark score, what it sounded like and which check stopped it. Select the barks and choose the dog (or Unknown dog, or let the Pi guess): they're added to the log as an episode, and the labels teach dog matching that voice. "No barking here" discards the audio but keeps the measurements.
+
+**Suggestions.** From all the barks you've marked in captures (and the sounds you didn't mark), the Tuning page works out the gentlest trigger, quiet level and confidence that would have counted them, how many of them that catches, and how many other sounds it would also let through. "Try these above" loads them into the sliders.
+
+Captures you don't review are removed with the clip retention.
 
 ## Backup and restore
 

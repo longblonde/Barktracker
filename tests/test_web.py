@@ -26,7 +26,7 @@ def client(tmp_path):
 
 def test_dashboard_flow(client):
     c, app = client
-    assert "barktracker" in c.get("/").text
+    assert "BarkTracker" in c.get("/").text
     s = c.get("/api/status").json()
     assert s["counts"]["episodes"] == 2
     eps = c.get("/api/episodes").json()

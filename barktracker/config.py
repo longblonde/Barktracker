@@ -75,6 +75,7 @@ class UiConfig:
     day_nap_below_dbfs: float = -50.0    # ...meaning background noise below this level
     sound_notes: bool = True             # "Hearing a car" on the live band for other recognised sounds...
     sound_note_min: float = 0.8          # ...when the sound model is at least this sure
+    bark_icon_color: str = "#d4252a"     # browser-tab icon dog color while barking
 
 
 @dataclass

@@ -165,6 +165,30 @@ def spectrogram_image(x: np.ndarray, width: int = 900, height: int = 96,
     return (img * 255).astype(np.uint8), len(x) / SR
 
 
+# ---- live spectrogram column for the tuning page ----------------------------------
+SPEC_ROWS = 64
+
+
+@lru_cache(maxsize=2)
+def _col_edges(rows: int = SPEC_ROWS, n_fft: int = 800) -> np.ndarray:
+    hz = _mel_to_hz(np.linspace(_hz_to_mel(60.0), _hz_to_mel(6000.0), rows + 1))
+    return np.clip(np.round(hz / (SR / n_fft)).astype(int), 1, n_fft // 2)
+
+
+def spec_column(frame: np.ndarray, rows: int = SPEC_ROWS) -> np.ndarray:
+    """One 50 ms frame as a uint8 column (row 0 = low frequency), on a fixed dB scale so columns
+    from different moments compare: about -100 dB -> 0, -25 dB -> 255 (relative to full scale)."""
+    x = np.asarray(frame, dtype=np.float32)
+    n = len(x)
+    p = np.abs(np.fft.rfft(x * _window(n))) ** 2
+    e = _col_edges(rows, n)
+    csum = np.concatenate([[0.0], np.cumsum(p)])
+    hi = np.maximum(e[1:], e[:-1] + 1)
+    mean = (csum[hi] - csum[e[:-1]]) / (hi - e[:-1])
+    db = 10 * np.log10(mean + 1e-12) - 10 * np.log10((n / 4) ** 2)
+    return (np.clip((db + 100.0) / 75.0, 0, 1) * 255).astype(np.uint8)
+
+
 # ---- live EQ bands for the dashboard -------------------------------------------
 EQ_BANDS = 20
 _EQ_FFT = 800                        # one 50 ms frame at 16 kHz -> 20 Hz bins

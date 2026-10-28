@@ -6,6 +6,7 @@ config objects (the detector and retention job read them on every use), and surv
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ SPECS = {s.key: s for s in [
     Spec("ui.day_nap_below_dbfs", "float", -90, -10),
     Spec("ui.sound_notes", "bool"),
     Spec("ui.sound_note_min", "float", 0.3, 0.99),
+    Spec("ui.bark_icon_color", "color"),
     Spec("audio.device", "device"),
     Spec("backup.path", "path"),
     Spec("backup.enabled", "bool"),
@@ -73,6 +75,11 @@ def coerce(key: str, value):
         if isinstance(value, str):
             return value.lower() in ("1", "true", "yes", "on")
         return bool(value)
+    if s.kind == "color":
+        v = str(value or "").strip()
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            raise ValueError("Colors look like #d4252a")
+        return v.lower()
     if s.kind == "device":
         v = str(value or "").strip()
         return v or "auto"
