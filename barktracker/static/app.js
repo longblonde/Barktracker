@@ -270,7 +270,7 @@ async function renderOverview(soft = false) {
     </section>
     <section class="grid2">
       <div class="panel"><h2>Last two weeks${who ? `: ${esc(who)}` : ""}</h2>${barsSvg(sum, cw.bars)}<p class="small muted" style="margin:6px 0 0">Minutes of barking per day. Select a day to see it above.</p></div>
-      <div class="panel"><h2>When it happens${who ? `: ${esc(who)}` : ""}</h2>${heatSvg(heat, cw.heat)}<p class="small muted" style="margin:6px 0 0">Past 4 weeks by hour. Darker means more barking.</p></div>
+      <div class="panel"><h2>When it happens${who ? `: ${esc(who)}` : ""}</h2>${heatSvg(heat, cw.heat)}<p class="small muted" style="margin:6px 0 0">Past 4 weeks by hour. Darker means more barking. <span class="qkey" aria-hidden="true"></span> Striped: quiet hours, ${clock12(heat.quiet_start)} to ${clock12(heat.quiet_end)}.</p></div>
     </section>
     <section>
       <div class="row spread"><h2>Needs review <span class="count">${todo.total}</span></h2><a href="#/clips" class="small" data-review="todo">All ${todo.total > 6 ? todo.total : ""} to review</a></div>
@@ -282,6 +282,7 @@ async function renderOverview(soft = false) {
       ${episodeList(done.items, "None yet", "Open a clip and label its barks, or press Mark reviewed, and it moves here.")}
     </section>`;
   wireDogFilter(() => renderOverview(true));
+  wireHeat(heat);
   view.querySelectorAll("a[data-review]").forEach((a) => a.onclick = () => {
     Object.assign(S.clipFilters, { review: a.dataset.review, offset: 0, dog: S.dogFilter.size === 1 ? [...S.dogFilter][0] : "" });
   });
@@ -355,20 +356,86 @@ function barsSvg(sum, W = 560) {
 }
 function niceTick(maxMin) { for (const t of [1, 2, 5, 10, 15, 30, 60, 120]) if (maxMin / t <= 4) return t; return 240; }
 
+const hourName = (h) => { h = ((h % 24) + 24) % 24; return h === 0 ? "12 AM" : h === 12 ? "12 PM" : h > 12 ? `${h - 12} PM` : `${h} AM`; };
+const clock12 = (hhmm) => { const [h, m] = String(hhmm).split(":").map(Number); const t = hourName(h); return m ? t.replace(" ", `:${String(m).padStart(2, "0")} `) : t; };
+const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
 function heatSvg(heat, Wt = 394) {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const lx = 34, cw = Math.max(9, (Wt - lx) / 24), ch = Math.min(22, Math.max(16, cw * 1.25)), W = lx + 24 * cw, H = 7 * ch + 20;
   const max = Math.max(1, ...heat.grid.flat());
-  let g = "";
+  const quiet = heat.quiet || [];
+  // diagonal stripes in the panel's own color, cut through the cells that fall in quiet hours
+  let g = `<defs><pattern id="qstripe" patternUnits="userSpaceOnUse" width="5" height="5" patternTransform="rotate(45)">
+    <rect width="1.6" height="5" fill="var(--panel)"/></pattern></defs>`;
   heat.grid.forEach((row, r) => {
     g += `<text x="0" y="${r * ch + 14}">${days[r]}</text>`;
     row.forEach((v, c) => {
       const op = v ? 0.12 + 0.88 * Math.sqrt(v / max) : 0;
-      g += `<rect x="${lx + c * cw}" y="${r * ch + 1}" width="${cw - 2}" height="${ch - 3}" rx="2" fill="${v ? "var(--ink)" : "var(--faint)"}" fill-opacity="${v ? op.toFixed(2) : 1}"><title>${days[r]} ${c}:00 · ${fmtDur(v)}</title></rect>`;
+      const x = lx + c * cw, y = r * ch + 1, w = cw - 2, h = ch - 3;
+      g += `<rect class="hcell" data-r="${r}" data-c="${c}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2" fill="${v ? "var(--ink)" : "var(--faint)"}" fill-opacity="${v ? op.toFixed(2) : 1}"/>`;
+      for (const [a, b] of quiet[c] || []) {
+        g += `<rect class="hq" x="${x + a * w}" y="${y}" width="${(b - a) * w}" height="${h}" rx="${a === 0 && b === 1 ? 2 : 0}" fill="url(#qstripe)"/>`;
+      }
     });
   });
   for (const hr of [0, 6, 12, 18]) g += `<text x="${lx + hr * cw}" y="${H - 2}">${hr === 0 ? "12a" : hr === 12 ? "12p" : hr > 12 ? hr - 12 + "p" : hr + "a"}</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barking by weekday and hour">${g}</svg>`;
+  // hover: thin white border, with a hairline of ink outside it so it also shows on a light panel
+  g += `<rect class="hfocus hring" x="0" y="0" width="0" height="0" rx="3.5" fill="none" stroke="var(--ink)" stroke-width="1" visibility="hidden"/>`;
+  g += `<rect class="hfocus hwhite" x="0" y="0" width="0" height="0" rx="2.5" fill="none" stroke="#fff" stroke-width="1.5" visibility="hidden"/>`;
+  return `<div class="heat-wrap"><svg class="heat" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barking by weekday and hour. Striped cells are quiet hours.">${g}</svg><div class="heat-tip" role="tooltip" hidden></div></div>`;
+}
+
+function heatTipHtml(heat, r, c) {
+  const n = heat.weekdays?.[r] || 0, secs = heat.grid[r][c], barks = heat.barks?.[r]?.[c] || 0, eps = heat.episodes?.[r]?.[c] || 0;
+  const q = (heat.quiet?.[c] || []);
+  const qFull = q.some(([a, b]) => a === 0 && b === 1), qPart = !qFull && q.length;
+  const plural = `${DAY_NAMES[r]}${n === 1 ? "" : "s"}`;
+  const dogs = Object.entries(heat.dogs?.[r]?.[c] || {}).sort((a, b) => b[1] - a[1]);
+  const qText = qFull ? `<span class="tip-quiet">Quiet hours</span>`
+    : qPart ? `<span class="tip-quiet">Quiet hours ${q[0][0] > 0 ? `from ${clock12(heat.quiet_start)}` : `until ${clock12(heat.quiet_end)}`}</span>` : "";
+  return `<strong>${DAY_NAMES[r]}s, ${hourName(c)}–${hourName(c + 1)}</strong>${qText}
+    <span class="tip-sub">Past ${heat.days} days (${n} ${plural})</span>
+    ${secs || barks ? `<span>${fmtDur(secs)} of barking · ${barks} bark${barks === 1 ? "" : "s"}${eps ? ` · ${eps} episode${eps === 1 ? "" : "s"}` : ""}</span>
+    ${dogs.length ? `<span class="tip-dogs">${dogs.map(([k, v]) => `<span><i style="--c:${dogColor(k)}"></i>${esc(dogName(k))} ${v}</span>`).join("")}</span>` : ""}`
+    : `<span class="muted">No barking</span>`}`;
+}
+
+function wireHeat(heat) {
+  const wrap = view.querySelector(".heat-wrap"); if (!wrap) return;
+  const svg = wrap.querySelector("svg"), tip = wrap.querySelector(".heat-tip"), white = svg.querySelector(".hwhite"), ring = svg.querySelector(".hring");
+  let cur = null;
+  const show = (cell, cx, cy) => {
+    if (cur !== cell) {
+      cur = cell;
+      const x = +cell.getAttribute("x"), y = +cell.getAttribute("y"), w = +cell.getAttribute("width"), h = +cell.getAttribute("height");
+      Object.entries({ x: x + 0.75, y: y + 0.75, width: w - 1.5, height: h - 1.5 }).forEach(([k, v]) => white.setAttribute(k, v));
+      Object.entries({ x: x - 1, y: y - 1, width: w + 2, height: h + 2 }).forEach(([k, v]) => ring.setAttribute(k, v));
+      white.setAttribute("visibility", "visible"); ring.setAttribute("visibility", "visible");
+      tip.innerHTML = heatTipHtml(heat, Number(cell.dataset.r), Number(cell.dataset.c));
+      tip.hidden = false;
+    }
+    // float beside the pointer, kept inside the panel
+    const wr = wrap.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+    let x = cx - wr.left + 14, y = cy - wr.top + 14;
+    if (x + tw > wr.width) x = cx - wr.left - tw - 14;
+    if (x < 0) x = Math.max(0, Math.min(wr.width - tw, cx - wr.left - tw / 2));
+    if (y + th > wr.height + 40) y = cy - wr.top - th - 14;
+    tip.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  };
+  const hide = () => { cur = null; tip.hidden = true; white.setAttribute("visibility", "hidden"); ring.setAttribute("visibility", "hidden"); };
+  const at = (e) => {
+    const cell = e.target.closest?.(".hcell") || document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.classList?.contains("hcell"));
+    if (cell) show(cell, e.clientX, e.clientY); else hide();
+  };
+  svg.addEventListener("pointermove", at);
+  svg.addEventListener("pointerdown", at);          // tap on a phone
+  svg.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") hide(); });
+  S.heatHide = (e) => { if (!wrap.contains(e.target)) hide(); };
+  if (!S.heatHideWired) {
+    S.heatHideWired = true;
+    document.addEventListener("pointerdown", (e) => S.heatHide && S.heatHide(e), true);
+  }
 }
 
 function episodeList(items, emptyTitle, emptyText) {

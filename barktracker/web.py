@@ -242,24 +242,64 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     @app.get("/api/heatmap")
     def heatmap(days: int = 28, dogs: str | None = None):
+        """Barking by weekday x hour over the past `days` days: seconds (from episode spans, so pauses
+        inside an episode count), plus barks, episodes and barks per dog in each cell, the number of
+        each weekday in the range, and which part of each hour falls in quiet hours."""
         sel = parse_sel(dogs)
+        days = max(1, min(days, 366))
         d_end = today()
         d0 = d_end - timedelta(days=days - 1)
         t0, t1 = day_start(d0), day_start(d_end + timedelta(days=1))
-        split = dog_split(t0, t1) if sel else {}
+        split = dog_split(t0, t1)
         grid = [[0.0] * 24 for _ in range(7)]   # [weekday Mon=0][hour] seconds
+        eps_n = [[0] * 24 for _ in range(7)]
+        barks_n = [[0] * 24 for _ in range(7)]
+        by_dog = [[defaultdict(int) for _ in range(24)] for _ in range(7)]
         for e in store.episodes_between(t0, t1):
             f = share(split.get(e["id"], {}), sel)
             if f <= 0:
                 continue
-            s, end = e["start_ts"], max(e["end_ts"], e["start_ts"] + 0.5)
+            s, end = max(e["start_ts"], t0), min(max(e["end_ts"], e["start_ts"] + 0.5), t1)
+            first = True
             while s < end:
                 dt = to_dt(s)
                 nxt = (dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)).timestamp()
                 seg = min(end, nxt) - s
                 grid[dt.weekday()][dt.hour] += seg * f
+                if first:
+                    eps_n[dt.weekday()][dt.hour] += 1     # an episode counts in the hour it started
+                    first = False
                 s = min(end, nxt)
-        return {"days": days, "grid": [[round(v, 1) for v in row] for row in grid]}
+        for r in store.q("SELECT b.ts, COALESCE(b.label_dog_id, b.pred_dog_id) d FROM barks b JOIN episodes e"
+                         " ON e.id=b.episode_id WHERE b.ts>=? AND b.ts<? AND e.false_positive=0", (t0, t1)):
+            if r["d"] == NOT_BARK:
+                continue
+            k = "u" if r["d"] is None else str(r["d"])
+            if sel is not None and k not in sel:
+                continue
+            dt = to_dt(r["ts"])
+            barks_n[dt.weekday()][dt.hour] += 1
+            by_dog[dt.weekday()][dt.hour][k] += 1
+        weekdays = [0] * 7
+        for i in range(days):
+            weekdays[(d0 + timedelta(days=i)).weekday()] += 1
+        th = O.get_ordinance(store)["thresholds"]
+        qs, qe = O._parse_hhmm(th["quiet_start"]), O._parse_hhmm(th["quiet_end"])
+        a, b = qs.hour * 60 + qs.minute, qe.hour * 60 + qe.minute
+        spans = [] if a == b else ([(a, b)] if a < b else [(a, 1440), (0, b)])
+        quiet = []
+        for h in range(24):
+            parts = []
+            for x, y in spans:
+                lo, hi = max(x, h * 60), min(y, h * 60 + 60)
+                if hi > lo:
+                    parts.append([round((lo - h * 60) / 60, 3), round((hi - h * 60) / 60, 3)])
+            quiet.append(parts)
+        return {"days": days, "grid": [[round(v, 1) for v in row] for row in grid],
+                "barks": barks_n, "episodes": eps_n,
+                "dogs": [[dict(c) for c in row] for row in by_dog],
+                "weekdays": weekdays, "quiet": quiet,
+                "quiet_start": th["quiet_start"], "quiet_end": th["quiet_end"]}
 
     # ---- episodes -------------------------------------------------------------
     @app.get("/api/episodes")
