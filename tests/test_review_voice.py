@@ -227,3 +227,27 @@ def test_day_quiet_hours(tmp_path):
     c.put("/api/ordinance", json={"thresholds": {"quiet_start": "13:00", "quiet_end": "15:30"}})
     assert c.get("/api/day?date=2026-10-27").json()["quiet"] == [[ts(13), ts(15, 30)]]
     app.shutdown()
+
+
+def test_not_a_bark_navigation_and_list_confidence(tmp_path):
+    cfg, app, c = setup(tmp_path, [("Big dog", 5), ("Small dog", 5), ("Big dog", 4), ("Small dog", 4), ("Big dog", 5)])
+    eps = sorted(c.get("/api/episodes").json()["items"], key=lambda e: e["start_ts"])
+    assert all(e["max_prob"] is not None for e in eps)
+    nb = [eps[0]["id"], eps[2]["id"], eps[4]["id"]]
+    for i in nb:
+        c.post(f"/api/episodes/{i}/label", json={"dog_id": 0})
+    mid = c.get(f"/api/episodes/{nb[1]}").json()
+    assert (mid["prev_id"], mid["next_id"]) == (nb[0], nb[2])          # skips the barking clips between
+    assert mid["position"] == {"index": 2, "of": 3}
+    bark = c.get(f"/api/episodes/{eps[1]['id']}").json()
+    assert bark["next_id"] == eps[3]["id"] and bark["prev_id"] is None
+    # automatic dog matches carry their confidence in the list
+    rex = c.post("/api/dogs", json={"name": "Rex"}).json()
+    c.post(f"/api/episodes/{eps[1]['id']}/label", json={"dog_id": rex["id"]})
+    c.post(f"/api/episodes/{eps[3]['id']}/label", json={"dog_id": None})
+    with app.store.tx() as cx:
+        cx.execute("UPDATE barks SET pred_dog_id=?, pred_conf=0.8 WHERE episode_id=?", (rex["id"], eps[3]["id"]))
+    items = {e["id"]: e for e in c.get("/api/episodes").json()["items"]}
+    assert items[eps[3]["id"]]["match"] == {str(rex["id"]): 0.8}
+    assert items[eps[1]["id"]]["match"] == {}                            # labelled by you: no guess shown
+    app.shutdown()

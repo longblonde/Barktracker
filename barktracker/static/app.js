@@ -64,10 +64,16 @@ function dominant(dogs) {
   for (const [k, v] of Object.entries(dogs || {})) if (v > n) { best = k; n = v; }
   return best;
 }
-function dogTags(dogs) {
+function dogTags(dogs, match) {
   const e = Object.entries(dogs || {}).sort((a, b) => b[1] - a[1]);
   if (!e.length) return `<span class="tag">No dog</span>`;
-  return e.map(([k, n]) => `<span class="tag" style="--c:${dogColor(k)}"><i></i>${esc(dogName(k))} ×${n}</span>`).join("");
+  return e.map(([k, n]) => `<span class="tag" style="--c:${dogColor(k)}"><i></i>${esc(dogName(k))} ×${n}${match && match[k] != null ? ` <span class="match" title="Matched automatically, ${Math.round(match[k] * 100)}% sure it's ${esc(dogName(k))}">${Math.round(match[k] * 100)}% match</span>` : ""}</span>`).join("");
+}
+function confPill(p, fp) {
+  if (p == null) return "";
+  const pct = Math.round(p * 100);
+  const lvl = pct >= 70 ? "hi" : pct >= 45 ? "mid" : "lo";
+  return `<span class="conf conf-${lvl}" title="${fp ? "Before it was marked “Not a bark”, the" : "The"} detector was ${pct}% sure this is barking">${pct}% bark</span>`;
 }
 const MARK = {
   auto: ["Auto", "Found, and matched to a dog if possible, automatically. Nobody has checked it yet."],
@@ -451,7 +457,7 @@ function episodeList(items, emptyTitle, emptyText) {
       <span class="when">${fmtTime(e.start_ts)}<span class="day">${fmtDay(e.start_ts)}</span></span>
       <span class="dur">${fmtDur(e.duration)}</span>
       <span class="n">${e.bark_count} ${e.false_positive ? "sound" : "bark"}${e.bark_count === 1 ? "" : "s"}</span>
-      <span class="dogs">${dogTags(e.dogs)}</span>
+      <span class="dogs">${dogTags(e.dogs, e.match)}${confPill(e.max_prob, e.false_positive)}</span>
       <span class="state ${e.reviewed || e.false_positive || e.marked === "mixed" ? "" : "new"}">${e.live ? "Recording" : e.false_positive ? (e.has_clip ? "Not a bark" : "Not a bark, audio deleted") : e.reviewed ? "Reviewed" : e.marked === "mixed" ? "Labelled" : "New"}${e.live || e.false_positive ? "" : markBadge(e.marked)}</span>
     </a>`).join("")}</div>`;
 }
@@ -530,8 +536,9 @@ async function renderClip() {
   view.innerHTML = `
     <section>
       <div class="row spread" style="margin-bottom:14px">
-        <a href="#/clips" class="small">All clips</a>
+        <a href="#/clips" class="small" id="backList">${ep.false_positive ? "All “Not a bark” clips" : "All clips"}</a>
         <div class="row">
+          ${ep.position?.of ? `<span class="small muted">${ep.false_positive ? "Not a bark " : ""}${ep.position.index} of ${ep.position.of}, newest first</span>` : ""}
           <button class="btn" id="prevEp" ${ep.prev_id ? "" : "disabled"}>Earlier</button>
           <button class="btn" id="nextEp" ${ep.next_id ? "" : "disabled"}>Later</button>
         </div>
@@ -570,6 +577,13 @@ async function renderClip() {
 
   $("#prevEp").onclick = () => (location.hash = `#/clip/${ep.prev_id}`);
   $("#nextEp").onclick = () => (location.hash = `#/clip/${ep.next_id}`);
+  $("#backList").onclick = () => { S.clipFilters.kind = ep.false_positive ? "not_bark" : "barking"; S.clipFilters.offset = 0; };
+  // arrow keys step through clips (← earlier, → later) unless you're typing
+  document.onkeydown = (ev) => {
+    if (route.name !== "clip" || ev.target.closest?.("input, textarea, select, audio") || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (ev.key === "ArrowLeft" && ep.prev_id) location.hash = `#/clip/${ep.prev_id}`;
+    else if (ev.key === "ArrowRight" && ep.next_id) location.hash = `#/clip/${ep.next_id}`;
+  };
   $("#saveNote").onclick = async () => { await api(`/api/episodes/${id}`, { method: "PATCH", body: { note: $("#note").value } }); toast("Note saved"); };
   const de = $("#delEp");
   if (de) de.onclick = async () => {
@@ -578,19 +592,26 @@ async function renderClip() {
     location.hash = ep.next_id ? `#/clip/${ep.next_id}` : "#/clips";
   };
   if (ep.false_positive) {
+    // while reviewing "Not a bark" clips, acting on one moves on to the next one (older first)
+    const nextNb = ep.prev_id || ep.next_id;
+    const moveOn = (msg) => {
+      toast(msg + (nextNb ? "" : ". That was the last “Not a bark” clip."));
+      if (nextNb) location.hash = `#/clip/${nextNb}`;
+      else { S.clipFilters.kind = "not_bark"; location.hash = "#/clips"; }
+    };
     $("#nbRestore").onclick = async () => {
       await api(`/api/episodes/${id}/label`, { method: "POST", body: { dog_id: null } });
-      toast("Restored as barking"); renderClip();
+      moveOn("Restored as barking");
     };
     const na = $("#nbAudio");
     if (na) na.onclick = async () => {
       await api(`/api/episodes/${id}?keep_training=true`, { method: "DELETE" });
-      toast("Audio deleted. The filter still remembers this sound."); renderClip();
+      moveOn("Audio deleted; the filter still remembers this sound");
     };
     $("#nbForget").onclick = async () => {
       if (!confirm("Delete this clip and stop using it to recognize false alarms? This can't be undone.")) return;
       await api(`/api/episodes/${id}`, { method: "DELETE" });
-      toast("Deleted and forgotten"); S.clipFilters.kind = "not_bark"; location.hash = "#/clips";
+      moveOn("Deleted and forgotten");
     };
   }
 

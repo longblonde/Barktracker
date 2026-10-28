@@ -468,3 +468,11 @@ h2 .count { font-size: 13px; font-weight: 500; color: var(--muted); margin-left:
 .legend span.nodot::before { display: none; }
 .legend .qkey { margin: 0 2px 0 0; }
 .legend .qkey::before { display: none; }
+
+/* ---- confidence in clip rows ---- */
+.tag .match { font-size: 11px; color: var(--muted); margin-left: 2px; font-variant-numeric: tabular-nums; }
+.conf { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 0 7px; border-radius: 999px;
+  border: 1px solid var(--rule); color: var(--ink); white-space: nowrap; align-self: center; }
+.conf-hi { background: var(--faint); }
+.conf-mid { border-style: dashed; }
+.conf-lo { border-style: dashed; color: var(--muted); }

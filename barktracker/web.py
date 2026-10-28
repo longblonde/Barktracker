@@ -368,15 +368,21 @@ def create_app(bark: BarkApp) -> FastAPI:
         for e in rows:
             s = {}
             n = lab = 0
+            match = {}
             for r in store.q("SELECT NULLIF(COALESCE(label_dog_id, pred_dog_id), -1) d, COUNT(*) n,"
-                             " SUM(label_dog_id IS NOT NULL) lab FROM barks WHERE episode_id=? GROUP BY d", (e["id"],)):
+                             " SUM(label_dog_id IS NOT NULL) lab,"
+                             " AVG(CASE WHEN label_dog_id IS NULL THEN pred_conf END) conf"
+                             " FROM barks WHERE episode_id=? GROUP BY d", (e["id"],)):
                 n += r["n"]
                 lab += r["lab"] or 0
                 if r["d"] == NOT_BARK:
                     continue
                 k = "u" if r["d"] is None else str(r["d"])
                 s[k] = r["n"]
-            out.append({**ep_view(e, s), "marked": marking(n, lab, bool(e["reviewed"])), "labelled": lab})
+                if k != "u" and r["conf"] is not None and (r["lab"] or 0) < r["n"]:
+                    match[k] = round(r["conf"], 2)        # how sure the automatic dog match was
+            out.append({**ep_view(e, s), "marked": marking(n, lab, bool(e["reviewed"])), "labelled": lab,
+                        "match": match})
         return {"total": total, "items": out}
 
     @app.get("/api/episodes/{eid}")
@@ -392,13 +398,18 @@ def create_app(bark: BarkApp) -> FastAPI:
                 continue
             k = "u" if b["dog_id"] is None else str(b["dog_id"])
             s[k] = s.get(k, 0) + 1
-        prev = store.q1("SELECT id FROM episodes WHERE start_ts < ? AND false_positive=0"
-                        " ORDER BY start_ts DESC LIMIT 1", (e["start_ts"],))
-        nxt = store.q1("SELECT id FROM episodes WHERE start_ts > ? AND false_positive=0"
-                       " ORDER BY start_ts LIMIT 1", (e["start_ts"],))
+        # Earlier/Later stay within the same kind: barking clips, or "Not a bark" clips under review
+        fp = 1 if e["false_positive"] else 0
+        prev = store.q1("SELECT id FROM episodes WHERE start_ts < ? AND false_positive=?"
+                        " ORDER BY start_ts DESC LIMIT 1", (e["start_ts"], fp))
+        nxt = store.q1("SELECT id FROM episodes WHERE start_ts > ? AND false_positive=?"
+                       " ORDER BY start_ts LIMIT 1", (e["start_ts"], fp))
+        pos = store.q1("SELECT SUM(start_ts >= ?) i, COUNT(*) n FROM episodes WHERE false_positive=?",
+                       (e["start_ts"], fp))
         lab = sum(1 for b in barks if b["label_dog_id"] is not None)
         return {**ep_view(e, s), "marked": marking(len(barks), lab, bool(e["reviewed"])), "labelled": lab,
                 "barks": barks, "sound": V.episode_sound(store, eid),
+                "position": {"index": pos["i"] or 0, "of": pos["n"] or 0},
                 "prev_id": prev["id"] if prev else None, "next_id": nxt["id"] if nxt else None}
 
     @app.get("/api/episodes/{eid}/audio")
