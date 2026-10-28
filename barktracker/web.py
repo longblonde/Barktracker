@@ -232,7 +232,21 @@ def create_app(bark: BarkApp) -> FastAPI:
             barks = [b for b in barks if ("u" if b["dog_id"] is None else str(b["dog_id"])) in sel]
         th = O.get_ordinance(store)["thresholds"]
         incs = O.build_incidents([{**e, "subject_barks": e["bark_count"]} for e in eps], th, O.Clock(cfg.timezone))
+        # quiet hours falling on this day, as timestamps (handles windows across midnight and DST)
+        qs, qe = O._parse_hhmm(th["quiet_start"]), O._parse_hhmm(th["quiet_end"])
+
+        def at(day_: date, t) -> float:
+            dt = datetime(day_.year, day_.month, day_.day, t.hour, t.minute, tzinfo=tz) if tz else \
+                datetime(day_.year, day_.month, day_.day, t.hour, t.minute)
+            return dt.timestamp()
+        if qs == qe:
+            quiet = []
+        elif qs < qe:
+            quiet = [[at(d, qs), at(d, qe)]]
+        else:
+            quiet = [[t0, at(d, qe)], [at(d, qs), t1]]
         return {"date": d.isoformat(), "start_ts": t0, "end_ts": t1,
+                "quiet": quiet, "quiet_start": th["quiet_start"], "quiet_end": th["quiet_end"],
                 "incidents": [{"start_ts": i["start_ts"], "end_ts": i["end_ts"], "flags": i["flags"],
                                "duration": i["duration"]} for i in incs],
                 "episodes": [{**ep_view(e, split.get(e["id"], {})), "share": round(share(split.get(e["id"], {}), sel), 3)}

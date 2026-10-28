@@ -251,6 +251,7 @@ async function renderOverview(soft = false) {
   const cw = chartWidths();
   const dogsSeen = new Set([...Object.keys(perDog)]);
   let legend = [...dogsSeen].map((k) => `<span style="--c:${dogColor(k)}">${esc(dogName(k))}</span>`).join("");
+  if ((day.quiet || []).length) legend += `<span class="nodot"><span class="qkey" aria-hidden="true"></span> Quiet hours, ${clock12(day.quiet_start)} to ${clock12(day.quiet_end)}</span>`;
   if ((day.incidents || []).some((i) => i.flags.length)) legend += `<span style="--c:var(--danger)"><a href="#/report">Meets ordinance criteria</a></span>`;
 
   view.innerHTML = `
@@ -311,7 +312,14 @@ function stripSvg(day, isToday, W = 1000) {
     g += `<line x1="${xx}" x2="${xx}" y1="6" y2="70" stroke="var(--faint)"/>`;
     if (hr < 24) g += `<text x="${xx + 3}" y="88">${hr === 0 ? "12a" : hr === 12 ? "12p" : hr > 12 ? hr - 12 + "p" : hr + "a"}</text>`;
   }
+  g += `<defs><pattern id="qstripe-day" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+    <rect width="2" height="6" fill="var(--panel)"/></pattern></defs>`;
   g += `<rect x="0" y="22" width="${W}" height="30" fill="var(--faint)" rx="3"/>`;
+  for (const [a, b] of day.quiet || []) {        // quiet hours: striped stretch of the track
+    const x0 = Math.max(0, x(a)), x1 = Math.min(W, x(b));
+    if (x1 <= x0) continue;
+    g += `<rect x="${x0}" y="22" width="${x1 - x0}" height="30" fill="url(#qstripe-day)"><title>Quiet hours, ${clock12(day.quiet_start)} to ${clock12(day.quiet_end)}</title></rect>`;
+  }
   for (const e of day.episodes) {
     const w = Math.max(3, x(e.end_ts) - x(e.start_ts));
     const label = `${fmtTime(e.start_ts)} · ${fmtDur(e.duration)} · ${e.bark_count} barks`;

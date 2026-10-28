@@ -465,3 +465,6 @@ h2 .count { font-size: 13px; font-weight: 500; color: var(--muted); margin-left:
 .qkey { display: inline-block; width: 12px; height: 10px; vertical-align: -1px; border-radius: 2px; margin-left: 4px;
   background: repeating-linear-gradient(45deg, var(--muted) 0 2px, transparent 2px 4px); }
 .mark-bark.unknown { border-left-style: dashed; }
+.legend span.nodot::before { display: none; }
+.legend .qkey { margin: 0 2px 0 0; }
+.legend .qkey::before { display: none; }

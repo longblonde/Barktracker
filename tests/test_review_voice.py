@@ -209,3 +209,21 @@ def test_unknown_dog_label(tmp_path):
     assert prof["barks"] == 5                                               # profile only from Rex's own labels
     assert c.post(f"/api/episodes/{eps[1]['id']}/label", json={"dog_id": -5}).status_code == 400
     app.shutdown()
+
+
+def test_day_quiet_hours(tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    cfg = Config(data_dir=str(tmp_path), timezone="America/Chicago")
+    app = BarkApp(cfg, None, start_detector=False)
+    c = TestClient(create_app(app))
+    tz = ZoneInfo("America/Chicago")
+    d = c.get("/api/day?date=2026-10-27").json()
+    ts = lambda h, m=0, day=27: datetime(2026, 10, day, h, m, tzinfo=tz).timestamp()   # noqa: E731
+    assert d["quiet"] == [[d["start_ts"], ts(7)], [ts(22), d["end_ts"]]]
+    # DST change day (Nov 1, 2026): still midnight-7 AM and 10 PM-midnight local time
+    d2 = c.get("/api/day?date=2026-11-01").json()
+    assert d2["quiet"][0][1] == datetime(2026, 11, 1, 7, tzinfo=tz).timestamp()
+    c.put("/api/ordinance", json={"thresholds": {"quiet_start": "13:00", "quiet_end": "15:30"}})
+    assert c.get("/api/day?date=2026-10-27").json()["quiet"] == [[ts(13), ts(15, 30)]]
+    app.shutdown()
