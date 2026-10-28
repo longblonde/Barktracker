@@ -1136,7 +1136,7 @@ function drawOrdinance(r) {
 function drawPictures(media) {
   const v = S.values || {};
   const m = { ...media, barkWords: v["ui.bark_words"] !== false, dayNap: v["ui.day_nap"] !== false, dayNapBelow: v["ui.day_nap_below_dbfs"],
-              soundNotes: v["ui.sound_notes"] !== false, soundMin: v["ui.sound_note_min"] ?? 0.8, iconColor: v["ui.bark_icon_color"] || "#d4252a" };
+              soundNotes: v["ui.sound_notes"] !== false, soundMin: v["ui.sound_note_min"] ?? 0.8, alertColor: v["ui.alert_color"] || "#e8a800" };
   const col = (kind, title, help) => {
     const items = m[kind], own = items.some((i) => i.own);
     return `<div class="piccol">
@@ -1156,7 +1156,7 @@ function drawPictures(media) {
         <span class="help" id="ambNow">Background noise right now: measuring…</span></label>
       <label class="check"><input type="checkbox" name="ui.sound_notes" ${m.soundNotes ? "checked" : ""}> Name other sounds the Pi recognizes, like “Hearing a car”</label>
       <label>Only when the sound model is at least<span class="unit"><input type="number" name="ui.sound_note_min" value="${Math.round(m.soundMin * 100)}" min="30" max="99" step="1" required>% sure</span></label>
-      <label class="colorpick">Browser tab icon while barking<span class="unit"><input type="color" name="ui.bark_icon_color" value="${esc(m.iconColor)}"> the dog turns this color, and the tab title reads “BarkTracker - Barking Detected”</span></label>
+      <label class="colorpick">Barking alert color<span class="unit"><input type="color" name="ui.alert_color" value="${esc(m.alertColor)}"> the live graph and the browser-tab dog turn this color while a dog is barking <button type="button" class="linkish small" id="alertDefault">Mustard (default)</button></span></label>
       <button class="btn" type="submit">Save</button>
     </form>
     <div class="three">
@@ -1172,12 +1172,15 @@ function drawPictures(media) {
       const st = await api("/api/settings", { method: "PUT", body: { values: {
         "ui.day_nap": f.elements["ui.day_nap"].checked, "ui.day_nap_below_dbfs": f.elements["ui.day_nap_below_dbfs"].value,
         "ui.sound_notes": f.elements["ui.sound_notes"].checked, "ui.sound_note_min": Number(f.elements["ui.sound_note_min"].value) / 100,
-        "ui.bark_icon_color": f.elements["ui.bark_icon_color"].value } } });
+        "ui.alert_color": f.elements["ui.alert_color"].value } } });
       S.values = st.values;
-      Beat.setPrefs({ iconColor: st.values["ui.bark_icon_color"] });
+      Beat.setPrefs({ alertColor: st.values["ui.alert_color"] });
       toast("Live band settings saved");
     } catch (err) { toast(err.message); }
   };
+  const ac = $("#dayNapForm").elements["ui.alert_color"];
+  ac.oninput = () => Beat.setPrefs({ alertColor: ac.value });          // preview; Save keeps it
+  $("#alertDefault").onclick = () => { ac.value = "#e8a800"; ac.oninput(); };
   clearInterval(S.ambTimer);
   S.ambTimer = setInterval(() => {
     const el = $("#ambNow"); if (!el) { clearInterval(S.ambTimer); return; }
@@ -1594,7 +1597,7 @@ const Beat = (() => {
     const r = Math.min(2.5, segH / 3, bw / 4);
     const barking = live.mode === "bark" && live.state !== "error";
     const css = getComputedStyle(band);
-    const on = css.getPropertyValue(barking ? "--caution" : "--ink").trim();
+    const on = barking ? prefs.alertColor : css.getPropertyValue("--ink").trim();
     const off = barking ? on : css.getPropertyValue("--faint").trim(), offAlpha = barking ? 0.16 : 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
@@ -1629,26 +1632,28 @@ const Beat = (() => {
   }
 
   // ---- display preferences (stored on the Pi, shared by every screen)
-  let prefs = { barkWords: true, iconColor: "#d4252a" };
+  let prefs = { barkWords: true, alertColor: "#e8a800" };
   async function loadPrefs() {
     try {
       const st = await api("/api/settings");
       prefs.barkWords = st.values["ui.bark_words"] !== false;
-      prefs.iconColor = st.values["ui.bark_icon_color"] || prefs.iconColor;
+      prefs.alertColor = st.values["ui.alert_color"] || prefs.alertColor;
     } catch (_) { /* keep defaults */ }
   }
-  function setPrefs(p) { Object.assign(prefs, p); if (!prefs.barkWords) splash.replaceChildren(); if ("iconColor" in p) { iconState = null; tabState(lastBarking); } }
+  function setPrefs(p) { Object.assign(prefs, p); if (!prefs.barkWords) splash.replaceChildren(); if ("alertColor" in p) { iconState = null; tabState(lastBarking); } }
 
-  // ---- browser tab: the icon's dog turns the barking color and the title says so
+  // ---- browser tab: just the dog (black on a light tab bar, white on a dark one); it turns the
+  // alert color while barking, and the title says so
   const LOGO_D = "M10.92,30.42c-3.89,1.44-7.65,2.04-10.92-1.12l.03-.31c.22,0,.43-.02.65,0,4.1.48,7.82-.56,10.9-3.24,3.04-2.64,6.54-3.89,10.43-4.48,3.18-.48,6.13-1.64,8.73-3.62.19-.15.65-.15.87-.03,3.12,1.83,6.4,3.23,9.93,4.05.23.05.57.35.57.55.08,2.2.18,4.41-.56,6.55-.8,2.3-2.18,4.15-4.17,5.57-.36.26-.72.79-.75,1.22-.17,2.53-.23,5.08-.34,7.61-.03.61.15,1,.76,1.25.84.35,1.32,1.03,1.47,1.94.1.6-.05.94-.74.92-.87-.03-1.75.01-2.62-.01-1.08-.03-1.46-.35-1.7-1.41-.73-3.2-1.45-6.4-2.14-9.6-.14-.67-.41-.92-1.15-1.03-2.71-.39-5.41-.92-8.11-1.39-.13-.02-.25-.06-.38-.07-.71-.07-1.53-.37-2.11-.12-.5.22-.73,1.07-1.07,1.65-.73,1.27-1.73,2.29-2.97,3.07-.33.2-.64.47-1,.57-2.57.75-2.98,2.92-3.35,5.09-.04.22.28.62.54.75.76.39,1.2.94,1.24,1.79.02.44-.13.71-.59.7-1.2-.03-2.41-.04-3.61-.11-.67-.04-1.04-.47-.97-1.14.21-2.35.43-4.7.73-7.04.06-.48.43-1.01.8-1.34,1.53-1.36,2.19-2.98,1.81-5.02-.13-.7-.14-1.42-.22-2.22Z M20.82,47.12c-2.51-.02-2.45.24-3.43-2.34-.56-1.48-1.13-2.97-1.71-4.44-.21-.53-.11-.9.41-1.22,1.58-.96,2.77-2.28,3.5-3.98.23-.53.55-.68,1.08-.58.83.16,1.66.32,2.5.45.52.08.55.33.35.75-.61,1.34-1.5,2.48-2.76,3.23-1.16.7-1.4,1.58-.97,2.77.12.34.2.69.27,1.04.18.91.41,1.67,1.56,1.86.75.12,1.22.79,1.4,1.59.13.58,0,.89-.66.86-.51-.02-1.03,0-1.54,0Z M40.58,32.78c-.08,2.51-.16,4.88-.24,7.26-.03,1-.04,2-.09,3-.03.54.2.84.7,1.05,1.07.45,1.62,1.28,1.67,2.45.02.4-.13.57-.52.56-.67,0-1.33,0-2,.02-.45,0-.61-.18-.65-.64-.09-1.18-.69-2.05-1.66-2.72-.28-.19-.54-.65-.54-.98.04-2.28.16-4.56.27-6.84.01-.24.1-.54.26-.69.88-.81,1.79-1.58,2.81-2.47Z M49.23,11.44c-1.12-.11-2.25-.21-3.37-.32-.89-.09-1.01-.32-.49-1.05.95-1.34,1.93-2.66,2.87-4.01.23-.33.36-.72.56-1.13-.26-.72-.46-1.44-.78-2.1-.4-.85-.68-.94-1.52-.51-1.25.65-2.49,1.33-3.69,2.06-.62.38-1.18.5-1.87.23-1.08-.42-2.18-.36-3.2.21-.65.36-1.29.76-1.84,1.25-.57.51-1.08.54-1.74.24-1.24-.56-2.5-1.07-3.75-1.6-.51-.21-.83-.12-.68.52.13.55.18,1.15.46,1.61.84,1.4,1.8,2.73,2.65,4.13.21.35.35.86.27,1.25-.15.8-.41,1.59-.71,2.35-.25.62-.14.96.46,1.29,2.62,1.43,5.33,2.63,8.24,3.36,1.32.34,1.36.35,1.6-1.01.4-2.21,1.69-3.49,3.88-3.91.63-.12,1.26-.25,1.87-.42.74-.21,1.24-.71,1.46-1.45.21-.72.07-.93-.68-1ZM39.62,8.4c-.56,0-1.01-.45-1.01-1.01s.45-1.01,1.01-1.01,1.01.45,1.01,1.01-.45,1.01-1.01,1.01Z";
   const favicon = document.getElementById("favicon");
   let iconState = null, lastBarking = false;
   function tabState(barking) {
     lastBarking = barking;
-    const want = barking ? prefs.iconColor : "#1d2833";
+    const want = barking ? prefs.alertColor : "auto";
     if (favicon && iconState !== want) {
       iconState = want;
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#ffffff"/><g transform="translate(2 2.5) scale(1.2)"><path fill="${want}" fill-rule="evenodd" d="${LOGO_D}"/></g></svg>`;
+      const style = barking ? `path{fill:${want}}` : "path{fill:#000}@media (prefers-color-scheme:dark){path{fill:#fff}}";
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 50"><style>${style}</style><path fill-rule="evenodd" d="${LOGO_D}"/></svg>`;
       favicon.href = "data:image/svg+xml," + encodeURIComponent(svg);
     }
     const t = barking ? "BarkTracker - Barking Detected" : "BarkTracker";
