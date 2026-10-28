@@ -1048,7 +1048,7 @@ function drawNotify(st) {
 
 function drawCode(r) {
   const th = r.ordinance.thresholds;
-  const el = settingsForm("code", "Code parameters", `${r.ordinance.preset === "burnsville_mn" ? "Burnsville's code says “habitually or frequently” without numbers, so these are your documentation criteria, not legal limits." : "Match these to your ordinance, or to what you consider reportable."} They decide which incidents reports and the overview highlight.`, `
+  const el = settingsForm("code", "Code parameters", `${r.ordinance.preset === "burnsville_mn" ? "Burnsville's code says “habitually or frequently” without numbers, so these are your documentation criteria, not legal limits." : "Match these to your ordinance, or to what you consider reportable. Most codes say “habitually or frequently” without numbers, so these are documentation criteria, not legal limits."} They decide which incidents reports and the overview highlight.`, `
     <div class="grid3">
       ${fieldNum("sustained_minutes", "Sustained barking", th.sustained_minutes, { unit: "minutes or longer", min: 0 })}
       ${fieldNum("max_pause_seconds", "Break allowed within one incident", th.max_pause_seconds, { unit: "seconds", min: 0 })}
@@ -1069,7 +1069,7 @@ function drawCode(r) {
 
 function drawOrdinance(r) {
   const o = r.ordinance;
-  settingsForm("ordinance", "Ordinance and contacts", `The rule your complaint reports cite. Defaults are for ${esc(o.jurisdiction)}.${o.source_url ? ` <a href="${esc(o.source_url)}" target="_blank" rel="noopener">Read the code on the city's site</a>; check it before filing, since codes change.` : ""}`, `
+  settingsForm("ordinance", "Ordinance and contacts", `The rule your complaint reports cite. ${o.preset === "example" ? "This is placeholder wording: choose your city under Preset, or type in your own." : `Currently ${esc(o.jurisdiction)}.`}${o.source_url ? ` <a href="${esc(o.source_url)}" target="_blank" rel="noopener">Read the code on the city's site</a>; check it before filing, since codes change.` : ""}`, `
     <div class="row"><label class="inline">Preset <select id="preset">${r.presets.map((p) => `<option value="${p.id}" ${p.id === o.preset ? "selected" : ""}>${esc(p.label)}</option>`).join("")}<option value="custom" ${r.presets.some((p) => p.id === o.preset) ? "" : "selected"}>Custom</option></select></label></div>
     ${fieldText("jurisdiction", "Jurisdiction", o.jurisdiction)}
     ${fieldText("code_section", "Code section", o.code_section)}
@@ -1095,9 +1095,17 @@ function drawOrdinance(r) {
     },
     `<button type="button" class="btn" id="resetOrd">Reset to preset</button>`);
   $("#resetOrd").onclick = async () => {
-    const preset = $("#preset").value === "custom" ? "burnsville_mn" : $("#preset").value;
+    const preset = $("#preset").value === "custom" ? "example" : $("#preset").value;
     if (!confirm("Replace the rule, code parameters and contacts with the preset? Your details are kept.")) return;
     await api("/api/ordinance", { method: "PUT", body: { reset: true, preset } }); toast("Reset to preset");
+    const fresh = await api("/api/ordinance"); drawOrdinance(fresh); drawCode(fresh);
+  };
+  $("#preset").onchange = async (e) => {     // picking a preset loads it
+    const p = e.target.value;
+    if (p === "custom") return;
+    const label = r.presets.find((x) => x.id === p)?.label || p;
+    if (!confirm(`Load the ${label} rule, code parameters and contacts? Your details are kept.`)) { e.target.value = o.preset in Object.fromEntries(r.presets.map((x) => [x.id, 1])) ? o.preset : "custom"; return; }
+    await api("/api/ordinance", { method: "PUT", body: { reset: true, preset: p } }); toast(`Loaded ${label}`);
     const fresh = await api("/api/ordinance"); drawOrdinance(fresh); drawCode(fresh);
   };
 }

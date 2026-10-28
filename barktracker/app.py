@@ -31,6 +31,7 @@ class BarkApp:
         if restored:
             self.store.set_meta("last_restore", restored)
         self.defaults = settings_mod.apply_saved(cfg, self.store)   # dashboard overrides
+        self._keep_ordinance()
         self.backup = backup_mod.Backup(cfg, self.store, getattr(cfg, "source_file", None))
         self.restart_pending = False
         self.recover()
@@ -57,6 +58,17 @@ class BarkApp:
         if start_detector:          # only the running service prunes clips and backs up (not one-off commands)
             self._spawn(self._maintenance_loop, "maintenance")
             self._spawn(self._backup_loop, "backup")
+
+    def _keep_ordinance(self) -> None:
+        """Installs from before the generic default (v0.11) ran on the Burnsville rules without saving
+        them; pin those so an update doesn't swap a working setup for placeholder text."""
+        from . import __version__
+        from . import ordinance as O
+        if self.store.get_meta("first_version") is not None:
+            return                                   # a database this version (or newer) created
+        if self.store.get_meta("ordinance") is None and self.store.q1("SELECT 1 FROM episodes LIMIT 1"):
+            O.save_ordinance(self.store, {"reset": True, "preset": "burnsville_mn"})
+        self.store.set_meta("first_version", __version__)
 
     def _spawn(self, fn, name):
         t = threading.Thread(target=fn, name=name, daemon=True)

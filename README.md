@@ -12,7 +12,7 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 - **Which dog.** Label a few barks per dog in the dashboard and new barks are matched to the closest voice automatically. Mark false alarms as "Not a bark" and similar sounds get ignored from then on.
 - **Live band on every page.** A picture that matches what's happening (a napping dog during quiet hours, a sitting dog in the daytime or when there's noise without barking, a barking dog the moment a bark is detected) next to a live EQ of the microphone, labelled in Hz (100 Hz to 7 kHz, log scale; most barks sit between 300 Hz and 3.5 kHz). Each column's top cell is the bright peak and the stack under it is half strength, so the tops read as a line of sound; bars fall with gravity and peaks hang briefly. It's monotone in the site's colors normally and switches to caution yellow while a dog is barking, with optional red BARK words popping in at random sizes and angles. It updates 6 times a second while quiet and 20 while barking. When the sound model recognizes something else with at least 80% certainty, a small note names it ("Hearing a car", "Hearing a lawn mower", "Hearing people talking"). Use your own photos, GIFs or video loops. Click the picture for a full-screen view you can leave on a spare screen or tablet.
 - **Dashboard.** Plain-language daily summary, a 24-hour timeline coloured by dog, two-week totals, an hour-by-weekday heatmap, clip list with filters.
-- **Your local ordinance.** Enter the animal-noise rule that applies where you live (Burnsville, MN is the default) and the criteria for incidents worth reporting: sustained barking, barking in quiet hours, frequent days, habitual patterns.
+- **Your local ordinance.** Enter the animal-noise rule that applies where you live (start from a city preset such as Burnsville, MN, or type in your own) and the criteria for incidents worth reporting: sustained barking, barking in quiet hours, frequent days, habitual patterns.
 - **Complaint reports.** Per dog or per neighbor's household, for any date range: print or save as PDF, download a clean CSV, or download every clip plus the CSVs as a zip for evidence.
 - **Unattended.** systemd service, crash recovery for half-written clips, clip retention and a disk cap, optional login, optional webhook (ntfy, Home Assistant) for long episodes.
 
@@ -97,20 +97,22 @@ Switching between napping and sitting waits 4 seconds so a passing car doesn't f
 
 ## Noise ordinance
 
-The **Code parameters** and **Ordinance and contacts** sections of Settings hold the rule your reports cite and the criteria used to flag incidents. It starts with Burnsville, MN:
+The **Code parameters** and **Ordinance and contacts** sections of Settings hold the rule your reports cite and the criteria used to flag incidents. A new install starts with generic placeholder wording ("City of Anytown", 555 phone numbers). Choose your city under **Preset**, or type in your own code section, the rule in plain words, source link, penalty and where to report.
 
-- **Rule:** Burnsville City Code [§ 6-2-7](https://burnsville.municipalcodeonline.com/book?type=ordinances#name=6-2-7_Obligation_To_Prevent_Nuisances) makes it a nuisance for an animal to habitually or frequently bark, cry, howl or whimper so it disturbs others. It sets **no minute count and no animal-specific quiet hours**.
-- **Contacts:** police non-emergency dispatch for noise complaints (952-322-2323, 24/7), Burnsville Animal Control at American Boarding Kennels (952-894-3647), City Hall (952-895-4400).
-- **Documentation criteria (editable):** because the code has no numbers, these are starting points for which incidents to highlight, not legal limits:
+**Presets** (pick one and it's loaded; your own details are kept):
+
+- **Burnsville, MN:** City Code [§ 6-2-7](https://burnsville.municipalcodeonline.com/book?type=ordinances#name=6-2-7_Obligation_To_Prevent_Nuisances) makes it a nuisance for an animal to habitually or frequently bark, cry, howl or whimper so it disturbs others, with no minute count and no animal-specific quiet hours. Contacts: police non-emergency dispatch for noise complaints (952-322-2323, 24/7), Burnsville Animal Control at American Boarding Kennels (952-894-3647), City Hall (952-895-4400).
+
+**Documentation criteria (editable).** Most codes say "habitually or frequently" without numbers, so these are starting points for which incidents to highlight, not legal limits:
 
 | Criterion | Default |
 |---|---|
 | Sustained | 10 min or more, with no break longer than 60 s |
-| Quiet hours | 5 min or more between 10 PM and 7 AM (Burnsville's construction and power-equipment hours, § 7-1-3) |
+| Quiet hours | 5 min or more between 10 PM and 7 AM |
 | Frequent day | 30 min or more of barking in one day |
 | Habitual pattern | 3 or more days meeting a criterion within 7 days |
 
-Change any of it for another city on the Settings page: jurisdiction, code section, the rule in plain words, source link, penalty, contacts and criteria are all editable, and "Reset to preset" restores Burnsville. Check the current code before filing; ordinances change.
+Installs from before v0.11 that were using the Burnsville rules keep them after updating. Check the current code before filing; ordinances change. To add a preset for your city, add an entry to `PRESETS` in `barktracker/ordinance.py` (pull requests welcome).
 
 ## Complaint reports
 

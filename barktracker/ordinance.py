@@ -1,7 +1,7 @@
 """Local animal-noise ordinance: settings, evaluation of logged barking against it, and
 complaint-report assembly (by dog or by neighbor/household).
 
-Most codes (Burnsville's included) define the offence qualitatively ("habitually or
+Most codes define the offence qualitatively ("habitually or
 frequently"), so the numeric thresholds here are *documentation criteria* the user sets
 to decide which incidents to highlight. They are not a legal determination.
 """
@@ -14,7 +14,36 @@ from zoneinfo import ZoneInfo
 
 from .storage import NOT_BARK, Store
 
+THRESHOLDS = {
+    "sustained_minutes": 10,     # incident at least this long counts as sustained barking
+    "max_pause_seconds": 60,     # pauses up to this long don't break an incident
+    "daily_minutes": 30,         # a day with at least this much barking counts as frequent
+    "quiet_start": "22:00",
+    "quiet_end": "07:00",
+    "quiet_minutes": 5,          # incident overlapping quiet hours by this much is flagged
+    "habitual_days": 3,          # this many qualifying days...
+    "habitual_window_days": 7,   # ...within this many days marks a habitual pattern
+}
+
 PRESETS: dict[str, dict] = {
+    # Placeholder wording for a new install: pick a city preset or enter your own.
+    "example": {
+        "preset": "example",
+        "jurisdiction": "City of Anytown (example)",
+        "code_section": "City Code § 0-0-0 (replace with your ordinance)",
+        "rule_text": ("No person may keep an animal that habitually or frequently barks, howls or makes other "
+                      "noise that disturbs the peace and quiet of the neighborhood."),
+        "rule_note": ("Example wording. Choose your city under Preset, or enter your local code section, "
+                      "the rule in plain words, a link to the source and where to report."),
+        "source_url": "",
+        "penalty": "See your city code.",
+        "contacts": [
+            {"name": "Police non-emergency line (example)", "phone": "555-555-0100"},
+            {"name": "Animal control (example)", "phone": "555-555-0101"},
+            {"name": "City hall (example)", "phone": "555-555-0102"},
+        ],
+        "thresholds": dict(THRESHOLDS),
+    },
     "burnsville_mn": {
         "preset": "burnsville_mn",
         "jurisdiction": "City of Burnsville, Minnesota",
@@ -34,20 +63,11 @@ PRESETS: dict[str, dict] = {
             {"name": "Burnsville Animal Control (American Boarding Kennels)", "phone": "952-894-3647"},
             {"name": "Burnsville City Hall", "phone": "952-895-4400"},
         ],
-        "thresholds": {
-            "sustained_minutes": 10,     # incident at least this long counts as sustained barking
-            "max_pause_seconds": 60,     # pauses up to this long don't break an incident
-            "daily_minutes": 30,         # a day with at least this much barking counts as frequent
-            "quiet_start": "22:00",
-            "quiet_end": "07:00",
-            "quiet_minutes": 5,          # incident overlapping quiet hours by this much is flagged
-            "habitual_days": 3,          # this many qualifying days...
-            "habitual_window_days": 7,   # ...within this many days marks a habitual pattern
-        },
+        "thresholds": dict(THRESHOLDS),
     },
 }
-PRESET_LABELS = {"burnsville_mn": "Burnsville, MN"}
-DEFAULT_PRESET = "burnsville_mn"
+PRESET_LABELS = {"example": "Generic placeholder", "burnsville_mn": "Burnsville, MN"}
+DEFAULT_PRESET = "example"
 REPORTER_FIELDS = ("name", "address", "phone", "email")
 
 

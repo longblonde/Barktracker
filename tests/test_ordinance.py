@@ -33,12 +33,32 @@ def add_episode(store, start, dur, barks, dog=None, label=True):
     return eid
 
 
-def test_defaults_are_burnsville():
+def test_defaults_are_generic_and_burnsville_is_a_preset():
     o = O.default_ordinance()
-    assert "6-2-7" in o["code_section"]
-    assert "Burnsville" in o["jurisdiction"]
-    assert any("952-322-2323" in c["phone"] for c in o["contacts"])
+    assert o["preset"] == "example" and "example" in o["jurisdiction"].lower()
+    assert all(c["phone"].startswith("555-555-01") for c in o["contacts"])     # fictional numbers
     assert o["thresholds"]["quiet_start"] == "22:00"
+    b = O.PRESETS["burnsville_mn"]
+    assert "6-2-7" in b["code_section"] and "Burnsville" in b["jurisdiction"]
+    assert any("952-322-2323" in c["phone"] for c in b["contacts"])
+    assert set(O.PRESET_LABELS) == set(O.PRESETS)
+
+
+def test_existing_install_keeps_burnsville(tmp_path):
+    from barktracker.storage import Store
+    st = Store(tmp_path / "barktracker.db")            # an install from before the generic default
+    eid = st.create_episode(1e9, None, 1e9)
+    st.finish_episode(eid, 1e9 + 5, 3, -20, 0.9, 9)
+    app = BarkApp(Config(data_dir=str(tmp_path)), None, start_detector=False)
+    assert O.get_ordinance(app.store)["preset"] == "burnsville_mn"
+    app.shutdown()
+    fresh = BarkApp(Config(data_dir=str(tmp_path / "new")), None, start_detector=False)
+    eid = fresh.store.create_episode(1e9, None, 1e9)          # a new install that has since logged barking
+    fresh.store.finish_episode(eid, 1e9 + 5, 3, -20, 0.9, 9)
+    fresh.shutdown()
+    again = BarkApp(Config(data_dir=str(tmp_path / "new")), None, start_detector=False)
+    assert O.get_ordinance(again.store)["preset"] == "example"
+    again.shutdown()
 
 
 def test_quiet_overlap_crosses_midnight():
@@ -113,16 +133,18 @@ def test_ordinance_api_roundtrip(tmp_path):
     app = BarkApp(cfg, None, start_detector=False)
     c = TestClient(create_app(app))
     o = c.get("/api/ordinance").json()
-    assert o["ordinance"]["preset"] == "burnsville_mn"
+    assert o["ordinance"]["preset"] == "example"
+    assert {p["id"] for p in o["presets"]} == {"example", "burnsville_mn"}
     r = c.put("/api/ordinance", json={"thresholds": {"sustained_minutes": 5, "quiet_start": "21:30"}}).json()
     assert r["ordinance"]["thresholds"]["sustained_minutes"] == 5
     assert "9:30 PM" in r["criteria"]["quiet_hours"]
     assert c.put("/api/ordinance", json={"thresholds": {"quiet_start": "nope"}}).status_code == 400
     r = c.put("/api/ordinance", json={"reset": True, "preset": "burnsville_mn"}).json()
     assert r["ordinance"]["thresholds"]["sustained_minutes"] == 10
-    c.put("/api/reporter", json={"name": "Dan", "address": "1 Main"})
+    assert "Burnsville" in r["ordinance"]["jurisdiction"]
+    c.put("/api/reporter", json={"name": "Jane Doe", "address": "100 Main St"})
     rep = c.get("/api/report?from=2026-10-01&to=2026-10-07").json()
-    assert rep["reporter"]["name"] == "Dan" and rep["summary"]["incidents"] == 0
+    assert rep["reporter"]["name"] == "Jane Doe" and rep["summary"]["incidents"] == 0
     assert c.get("/api/report.csv?from=2026-10-01&to=2026-10-07").status_code == 200
     z = c.get("/api/report/clips.zip?from=2026-10-01&to=2026-10-07")
     assert z.status_code == 200 and z.content[:2] == b"PK"
