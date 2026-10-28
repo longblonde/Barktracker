@@ -64,10 +64,10 @@ def summarize(feats: list[np.ndarray]) -> dict | None:
 
 
 def _features_by_dog(store: Store, labelled_only: bool = True) -> dict[int, list[np.ndarray]]:
-    col = "label_dog_id" if labelled_only else "COALESCE(label_dog_id, pred_dog_id)"
+    col = "label_dog_id" if labelled_only else "NULLIF(COALESCE(label_dog_id, pred_dog_id), -1)"
     rows = store.conn.execute(
-        f"SELECT {col} d, features FROM barks WHERE {col} IS NOT NULL AND {col} != ? AND features IS NOT NULL",
-        (NOT_BARK,)).fetchall()
+        f"SELECT {col} d, features FROM barks WHERE {col} IS NOT NULL AND {col} NOT IN (?, -1)"
+        " AND features IS NOT NULL", (NOT_BARK,)).fetchall()
     out: dict[int, list[np.ndarray]] = {}
     for d, blob in rows:
         out.setdefault(int(d), []).append(np.frombuffer(blob, dtype=np.float32))

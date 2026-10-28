@@ -270,7 +270,7 @@ async function renderOverview(soft = false) {
     </section>
     <section class="grid2">
       <div class="panel"><h2>Last two weeks${who ? `: ${esc(who)}` : ""}</h2>${barsSvg(sum, cw.bars)}<p class="small muted" style="margin:6px 0 0">Minutes of barking per day. Select a day to see it above.</p></div>
-      <div class="panel"><h2>When it happens${who ? `: ${esc(who)}` : ""}</h2>${heatSvg(heat, cw.heat)}<p class="small muted" style="margin:6px 0 0">Past 4 weeks by hour. Darker means more barking. <span class="qkey" aria-hidden="true"></span> Striped: quiet hours, ${clock12(heat.quiet_start)} to ${clock12(heat.quiet_end)}.</p></div>
+      <div class="panel"><h2>When it happens${who ? `: ${esc(who)}` : ""}</h2>${heatSvg(heat, cw.heat)}</div>
     </section>
     <section>
       <div class="row spread"><h2>Needs review <span class="count">${todo.total}</span></h2><a href="#/clips" class="small" data-review="todo">All ${todo.total > 6 ? todo.total : ""} to review</a></div>
@@ -383,59 +383,56 @@ function heatSvg(heat, Wt = 394) {
   // hover: thin white border, with a hairline of ink outside it so it also shows on a light panel
   g += `<rect class="hfocus hring" x="0" y="0" width="0" height="0" rx="3.5" fill="none" stroke="var(--ink)" stroke-width="1" visibility="hidden"/>`;
   g += `<rect class="hfocus hwhite" x="0" y="0" width="0" height="0" rx="2.5" fill="none" stroke="#fff" stroke-width="1.5" visibility="hidden"/>`;
-  return `<div class="heat-wrap"><svg class="heat" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barking by weekday and hour. Striped cells are quiet hours.">${g}</svg><div class="heat-tip" role="tooltip" hidden></div></div>`;
+  return `<div class="heat-wrap"><svg class="heat" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barking by weekday and hour. Striped cells are quiet hours.">${g}</svg><div class="heat-info" aria-live="polite">${heatCaption(heat)}</div></div>`;
 }
 
-function heatTipHtml(heat, r, c) {
+function heatInfoHtml(heat, r, c, pinned) {
   const n = heat.weekdays?.[r] || 0, secs = heat.grid[r][c], barks = heat.barks?.[r]?.[c] || 0, eps = heat.episodes?.[r]?.[c] || 0;
-  const q = (heat.quiet?.[c] || []);
+  const q = heat.quiet?.[c] || [];
   const qFull = q.some(([a, b]) => a === 0 && b === 1), qPart = !qFull && q.length;
-  const plural = `${DAY_NAMES[r]}${n === 1 ? "" : "s"}`;
   const dogs = Object.entries(heat.dogs?.[r]?.[c] || {}).sort((a, b) => b[1] - a[1]);
-  const qText = qFull ? `<span class="tip-quiet">Quiet hours</span>`
-    : qPart ? `<span class="tip-quiet">Quiet hours ${q[0][0] > 0 ? `from ${clock12(heat.quiet_start)}` : `until ${clock12(heat.quiet_end)}`}</span>` : "";
-  return `<strong>${DAY_NAMES[r]}s, ${hourName(c)}–${hourName(c + 1)}</strong>${qText}
-    <span class="tip-sub">Past ${heat.days} days (${n} ${plural})</span>
-    ${secs || barks ? `<span>${fmtDur(secs)} of barking · ${barks} bark${barks === 1 ? "" : "s"}${eps ? ` · ${eps} episode${eps === 1 ? "" : "s"}` : ""}</span>
-    ${dogs.length ? `<span class="tip-dogs">${dogs.map(([k, v]) => `<span><i style="--c:${dogColor(k)}"></i>${esc(dogName(k))} ${v}</span>`).join("")}</span>` : ""}`
-    : `<span class="muted">No barking</span>`}`;
+  const qText = qFull ? `<span class="hi-quiet">Quiet hours</span>`
+    : qPart ? `<span class="hi-quiet">Quiet hours ${q[0][0] > 0 ? `from ${clock12(heat.quiet_start)}` : `until ${clock12(heat.quiet_end)}`}</span>` : "";
+  return `<div class="hi-head"><strong>${DAY_NAMES[r]}s, ${hourName(c)} to ${hourName(c + 1)}</strong>${qText}
+      ${pinned ? `<button type="button" class="linkish hi-close">Close</button>` : ""}</div>
+    <div class="hi-body">${secs || barks
+      ? `<span><b>${fmtDur(secs)}</b> of barking</span><span><b>${barks}</b> bark${barks === 1 ? "" : "s"}</span><span><b>${eps}</b> episode${eps === 1 ? "" : "s"}</span>`
+      : `<span class="muted">No barking</span>`}<span class="muted">over ${n} ${DAY_NAMES[r]}${n === 1 ? "" : "s"}</span></div>
+    ${dogs.length ? `<div class="hi-dogs">${dogs.map(([k, v]) => `<span class="tag" style="--c:${dogColor(k)}"><i></i>${esc(dogName(k))} ×${v}</span>`).join("")}</div>` : ""}`;
+}
+function heatCaption(heat) {
+  return `<p class="small muted hi-cap">Past 4 weeks by hour. Darker means more barking. <span class="qkey" aria-hidden="true"></span> Striped: quiet hours, ${clock12(heat.quiet_start)} to ${clock12(heat.quiet_end)}. Point at or tap an hour for details.</p>`;
 }
 
 function wireHeat(heat) {
   const wrap = view.querySelector(".heat-wrap"); if (!wrap) return;
-  const svg = wrap.querySelector("svg"), tip = wrap.querySelector(".heat-tip"), white = svg.querySelector(".hwhite"), ring = svg.querySelector(".hring");
-  let cur = null;
-  const show = (cell, cx, cy) => {
-    if (cur !== cell) {
-      cur = cell;
-      const x = +cell.getAttribute("x"), y = +cell.getAttribute("y"), w = +cell.getAttribute("width"), h = +cell.getAttribute("height");
-      Object.entries({ x: x + 0.75, y: y + 0.75, width: w - 1.5, height: h - 1.5 }).forEach(([k, v]) => white.setAttribute(k, v));
-      Object.entries({ x: x - 1, y: y - 1, width: w + 2, height: h + 2 }).forEach(([k, v]) => ring.setAttribute(k, v));
-      white.setAttribute("visibility", "visible"); ring.setAttribute("visibility", "visible");
-      tip.innerHTML = heatTipHtml(heat, Number(cell.dataset.r), Number(cell.dataset.c));
-      tip.hidden = false;
-    }
-    // float beside the pointer, kept inside the panel
-    const wr = wrap.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
-    let x = cx - wr.left + 14, y = cy - wr.top + 14;
-    if (x + tw > wr.width) x = cx - wr.left - tw - 14;
-    if (x < 0) x = Math.max(0, Math.min(wr.width - tw, cx - wr.left - tw / 2));
-    if (y + th > wr.height + 40) y = cy - wr.top - th - 14;
-    tip.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  const svg = wrap.querySelector("svg"), info = wrap.querySelector(".heat-info");
+  const white = svg.querySelector(".hwhite"), ring = svg.querySelector(".hring");
+  let cur = null, pinned = null;
+  const outline = (cell) => {
+    if (!cell) { white.setAttribute("visibility", "hidden"); ring.setAttribute("visibility", "hidden"); return; }
+    const x = +cell.getAttribute("x"), y = +cell.getAttribute("y"), w = +cell.getAttribute("width"), h = +cell.getAttribute("height");
+    Object.entries({ x: x + 0.75, y: y + 0.75, width: w - 1.5, height: h - 1.5 }).forEach(([k, v]) => white.setAttribute(k, v));
+    Object.entries({ x: x - 1, y: y - 1, width: w + 2, height: h + 2 }).forEach(([k, v]) => ring.setAttribute(k, v));
+    white.setAttribute("visibility", "visible"); ring.setAttribute("visibility", "visible");
   };
-  const hide = () => { cur = null; tip.hidden = true; white.setAttribute("visibility", "hidden"); ring.setAttribute("visibility", "hidden"); };
-  const at = (e) => {
-    const cell = e.target.closest?.(".hcell") || document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.classList?.contains("hcell"));
-    if (cell) show(cell, e.clientX, e.clientY); else hide();
+  const show = (cell) => {
+    if (cur === cell) return;
+    cur = cell;
+    outline(cell);
+    if (!cell) { info.innerHTML = heatCaption(heat); return; }
+    info.innerHTML = heatInfoHtml(heat, Number(cell.dataset.r), Number(cell.dataset.c), cell === pinned);
+    const x = info.querySelector(".hi-close");
+    if (x) x.onclick = () => { pinned = null; cur = undefined; show(null); };
   };
-  svg.addEventListener("pointermove", at);
-  svg.addEventListener("pointerdown", at);          // tap on a phone
-  svg.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") hide(); });
-  S.heatHide = (e) => { if (!wrap.contains(e.target)) hide(); };
-  if (!S.heatHideWired) {
-    S.heatHideWired = true;
-    document.addEventListener("pointerdown", (e) => S.heatHide && S.heatHide(e), true);
-  }
+  const cellAt = (e) => e.target.closest?.(".hcell");
+  svg.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && !pinned) show(cellAt(e) || null); });
+  svg.addEventListener("pointerleave", () => { if (!pinned) show(null); });
+  svg.addEventListener("click", (e) => {           // click or tap keeps an hour's details up
+    const cell = cellAt(e);
+    pinned = cell && cell !== pinned ? cell : null;
+    cur = undefined; show(pinned || (e.pointerType === "mouse" ? cell : null) || null);
+  });
 }
 
 function episodeList(items, emptyTitle, emptyText) {
@@ -619,9 +616,9 @@ async function renderClip() {
     m.innerHTML = ep.barks.map((b) => {
       const k = b.dog_id === NOT_BARK ? null : b.dog_id == null ? "u" : String(b.dog_id);
       const color = b.dog_id === NOT_BARK ? "#c2453d" : dogColor(k);
-      const who = b.dog_id === NOT_BARK ? "Not a bark" : dogName(k);
-      const how = b.label_dog_id != null ? "labelled by you" : b.pred_dog_id != null ? `guessed, ${Math.round((b.pred_conf || 0) * 100)}% sure` : "not identified yet";
-      return `<button class="mark-bark" data-b="${b.id}" aria-pressed="${sel.has(b.id)}" style="--c:${color};left:${(b.offset / clipLen) * 100}%;width:${Math.max(0.5, (b.duration / clipLen) * 100)}%" title="${esc(who)} (${how}) at ${b.offset.toFixed(1)} s" aria-label="Bark at ${b.offset.toFixed(1)} seconds: ${esc(who)}, ${how}"></button>`;
+      const who = b.dog_id === NOT_BARK ? "Not a bark" : b.unknown ? "Unknown dog" : dogName(k);
+      const how = b.unknown ? "marked by you" : b.label_dog_id != null ? "labelled by you" : b.pred_dog_id != null ? `guessed, ${Math.round((b.pred_conf || 0) * 100)}% sure` : "not identified yet";
+      return `<button class="mark-bark${b.unknown ? " unknown" : ""}" data-b="${b.id}" aria-pressed="${sel.has(b.id)}" style="--c:${color};left:${(b.offset / clipLen) * 100}%;width:${Math.max(0.5, (b.duration / clipLen) * 100)}%" title="${esc(who)} (${how}) at ${b.offset.toFixed(1)} s" aria-label="Bark at ${b.offset.toFixed(1)} seconds: ${esc(who)}, ${how}"></button>`;
     }).join("");
     m.querySelectorAll(".mark-bark").forEach((btn) => btn.addEventListener("click", (ev) => {
       const bid = Number(btn.dataset.b), b = ep.barks.find((x) => x.id === bid);
@@ -643,11 +640,12 @@ async function renderClip() {
       ${snd && !sel.size ? `<p class="small muted" style="margin:0">These barks sound ${SIZE_SOUND[snd.sounds_like]} (around ${fmtHz(snd.pitch_hz)}), like ${SIZE_WORD[snd.sounds_like]}.${suggest.size ? ` Suggested: ${[...suggest].map((id) => esc(S.dogs[id].name)).join(" or ")}. Tap to confirm.` : ""}</p>` : ""}
       <div class="row">
         ${dogs.map((d) => `<button class="chip ${suggest.has(d.id) ? "suggest" : ""}" data-label="${d.id}" style="--c:${d.color}" aria-pressed="${current === d.id}"><i></i>${esc(d.name)}${suggest.has(d.id) ? ` <span class="sugg">suggested</span>` : ""}</button>`).join("")}
+        <button class="chip" data-label="-1" style="--c:${UNKNOWN}" aria-pressed="${current === -1}" title="It's a bark, but you can't tell whose. Not credited to any dog, and the Pi doesn't learn from it either way."><i></i>Unknown dog</button>
         <button class="chip" data-label="0" style="--c:var(--danger)" aria-pressed="${current === 0}"><i></i>Not a bark</button>
         <button class="btn" data-label="clear">Clear labels</button>
         ${sel.size ? `<button class="btn" id="selNone">Use whole clip instead</button>` : ""}
       </div>
-      <p class="small muted" style="margin:0">${dogs.length ? "Labelling teaches the Pi each dog's voice. Marking false alarms as “Not a bark” teaches it to ignore that sound next time." : `<a href="#/dogs">Add your dogs</a> first, then label clips here to teach the Pi who's who.`}</p>
+      <p class="small muted" style="margin:0">${dogs.length ? "Labelling teaches the Pi each dog's voice. Marking false alarms as “Not a bark” teaches it to ignore that sound next time. “Unknown dog” keeps it as barking without crediting anyone or teaching the Pi anything." : `<a href="#/dogs">Add your dogs</a> first, then label clips here to teach the Pi who's who.`}</p>
       <p class="small muted" style="margin:0">Detected: ${dogTags(ep.dogs)}</p>`;
     $("#labeler").querySelectorAll("[data-label]").forEach((b) => b.addEventListener("click", async () => {
       const v = b.dataset.label === "clear" ? null : Number(b.dataset.label);
@@ -657,7 +655,7 @@ async function renderClip() {
         else res = await api(`/api/episodes/${id}/label`, { method: "POST", body: { dog_id: v } });
         const fresh = await api(`/api/episodes/${id}`);
         Object.assign(ep, fresh); sel.clear(); drawMarks(); drawLabeler();
-        const who = v === null ? "Labels cleared" : v === 0 ? "Marked as not a bark" : `Labelled as ${S.dogs[v]?.name}`;
+        const who = v === null ? "Labels cleared" : v === 0 ? "Marked as not a bark" : v === -1 ? "Marked as an unknown dog" : `Labelled as ${S.dogs[v]?.name}`;
         const info = res.identifier || {};
         toast(info.trained ? `${who}. Retrained on ${Object.values(info.counts).reduce((a, c) => a + c, 0)} labelled barks.` : `${who}.`);
       } catch (e) { toast(e.message); }

@@ -11,6 +11,8 @@ from typing import Any, Iterable
 import numpy as np
 
 NOT_BARK = 0  # sentinel dog id meaning "this was not a bark"
+UNKNOWN = -1  # label meaning "a bark, but I can't tell which dog": no dog is credited and the
+              # identifier neither learns from it nor overrides it
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS dogs (
@@ -193,6 +195,9 @@ class Store:
                       " FROM barks WHERE episode_id=? ORDER BY ts", (episode_id,))
         for r in rows:
             r["dog_id"] = r["label_dog_id"] if r["label_dog_id"] is not None else r["pred_dog_id"]
+            r["unknown"] = r["label_dog_id"] == UNKNOWN
+            if r["unknown"]:
+                r["dog_id"] = None
         return rows
 
     def label_barks(self, bark_ids: list[int], dog_id: int | None) -> None:
@@ -242,7 +247,8 @@ class Store:
 
     def training_set(self) -> tuple[np.ndarray, np.ndarray]:
         rows = self.conn.execute(
-            "SELECT features, label_dog_id FROM barks WHERE label_dog_id IS NOT NULL AND features IS NOT NULL"
+            "SELECT features, label_dog_id FROM barks WHERE label_dog_id IS NOT NULL AND label_dog_id != -1"
+            " AND features IS NOT NULL"
         ).fetchall()
         if not rows:
             return np.zeros((0, 0), np.float32), np.zeros(0, np.int64)
@@ -269,7 +275,7 @@ class Store:
 
     def bark_dogs_between(self, t0: float, t1: float) -> list[dict]:
         return self.q(
-            "SELECT b.episode_id, COALESCE(b.label_dog_id, b.pred_dog_id) AS dog_id, COUNT(*) AS n"
+            "SELECT b.episode_id, NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) AS dog_id, COUNT(*) AS n"
             " FROM barks b JOIN episodes e ON e.id=b.episode_id"
             " WHERE e.start_ts < ? AND e.end_ts >= ? AND e.false_positive=0"
             " GROUP BY b.episode_id, dog_id", (t1, t0))

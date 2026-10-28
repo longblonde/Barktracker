@@ -271,6 +271,8 @@ def build_report(store: Store, tz: str | None, d0: date, d1: date, dog_id: int |
     per_ep: dict[int, dict] = defaultdict(lambda: {"confirmed": 0, "auto": 0, "dogs": Counter()})
     for r in rows:
         d = r["label_dog_id"] if r["label_dog_id"] is not None else r["pred_dog_id"]
+        if d == -1:              # marked "Unknown dog": a bark, credited to nobody
+            d = None
         if d == NOT_BARK:
             continue
         info = per_ep[r["episode_id"]]

@@ -179,3 +179,33 @@ def test_heatmap_cells_and_quiet_hours(tmp_path):
     h2 = c.get(f"/api/heatmap?dogs={rex['id']}").json()
     assert sum(map(sum, h2["barks"])) == 5
     app.shutdown()
+
+
+def test_unknown_dog_label(tmp_path):
+    from barktracker.storage import UNKNOWN
+    cfg, app, c = setup(tmp_path, [("Big dog", 5), ("Big dog", 5), ("Small dog", 5)])
+    rex = c.post("/api/dogs", json={"name": "Rex"}).json()
+    eps = sorted(c.get("/api/episodes").json()["items"], key=lambda e: e["start_ts"])
+    c.post(f"/api/episodes/{eps[0]['id']}/label", json={"dog_id": rex["id"]})
+    X0, y0 = app.store.training_set()
+    r = c.post(f"/api/episodes/{eps[1]['id']}/label", json={"dog_id": UNKNOWN})
+    assert r.status_code == 200
+    # not learned from: training data unchanged
+    X1, y1 = app.store.training_set()
+    assert X1.shape == X0.shape and UNKNOWN not in set(y1.tolist())
+    ep = c.get(f"/api/episodes/{eps[1]['id']}").json()
+    assert not ep["false_positive"] and ep["marked"] == "manual"            # still barking, checked by you
+    assert all(b["unknown"] and b["dog_id"] is None for b in ep["barks"])
+    assert ep["dogs"] == {"u": 5}                                           # credited to nobody
+    # counted as barking in stats, not under any dog; stays put after retraining
+    c.post("/api/retrain")
+    assert c.get(f"/api/episodes/{eps[1]['id']}").json()["dogs"] == {"u": 5}
+    assert eps[1]["id"] not in {e["id"] for e in c.get(f"/api/episodes?dogs={rex['id']}").json()["items"]}
+    assert eps[1]["id"] in {e["id"] for e in c.get("/api/episodes?dogs=u").json()["items"]}
+    assert eps[1]["id"] in {e["id"] for e in c.get("/api/episodes?review=done").json()["items"]}
+    rep = c.get(f"/api/report?dog={rex['id']}").json()
+    assert all(eps[1]["id"] not in (i.get("episode_ids") or []) for i in rep.get("incidents", []))
+    prof = {d["name"]: d for d in c.get("/api/dogs").json()["dogs"]}["Rex"]["profile"]
+    assert prof["barks"] == 5                                               # profile only from Rex's own labels
+    assert c.post(f"/api/episodes/{eps[1]['id']}/label", json={"dog_id": -5}).status_code == 400
+    app.shutdown()

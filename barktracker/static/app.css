@@ -453,13 +453,15 @@ h2 .count { font-size: 13px; font-weight: 500; color: var(--muted); margin-left:
 .heat-wrap { position: relative; }
 .heat .hq, .heat .hfocus { pointer-events: none; }
 .heat .hcell { cursor: default; }
-.heat-tip { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; display: grid; gap: 3px;
-  min-width: 190px; max-width: 260px; padding: 9px 11px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.35;
-  background: var(--ink); color: var(--panel); box-shadow: 0 6px 18px rgba(0, 0, 0, .22); }
-.heat-tip .tip-sub, .heat-tip .muted { color: color-mix(in srgb, var(--panel) 70%, var(--ink)); font-size: 12px; }
-.heat-tip .tip-quiet { justify-self: start; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--panel) 50%, var(--ink)); }
-.heat-tip .tip-dogs { display: flex; flex-wrap: wrap; gap: 4px 10px; }
-.heat-tip .tip-dogs i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--c); margin-right: 5px; }
+.heat-info { margin-top: 8px; min-height: 4.6em; font-size: 13px; }
+.heat-info .hi-cap { margin: 0; }
+.hi-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hi-head .hi-close { margin-left: auto; font-size: 12px; color: var(--muted); }
+.hi-quiet { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 999px; border: 1px solid var(--rule); color: var(--muted);
+  background: repeating-linear-gradient(45deg, transparent 0 3px, var(--faint) 3px 5px); }
+.hi-body { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 3px; }
+.hi-body b { font-weight: 600; }
+.hi-dogs { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 3px; }
 .qkey { display: inline-block; width: 12px; height: 10px; vertical-align: -1px; border-radius: 2px; margin-left: 4px;
   background: repeating-linear-gradient(45deg, var(--muted) 0 2px, transparent 2px 4px); }
+.mark-bark.unknown { border-left-style: dashed; }

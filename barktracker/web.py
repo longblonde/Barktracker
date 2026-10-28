@@ -224,7 +224,7 @@ def create_app(bark: BarkApp) -> FastAPI:
         t0, t1 = day_start(d), day_start(d + timedelta(days=1))
         split = dog_split(t0, t1)
         eps = [e for e in store.episodes_between(t0, t1) if share(split.get(e["id"], {}), sel) > 0]
-        barks = store.q("SELECT b.ts, COALESCE(b.label_dog_id, b.pred_dog_id) dog_id FROM barks b"
+        barks = store.q("SELECT b.ts, NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) dog_id FROM barks b"
                         " JOIN episodes e ON e.id=b.episode_id WHERE b.ts>=? AND b.ts<? AND"
                         " e.false_positive=0 AND COALESCE(b.label_dog_id, b.pred_dog_id, -1) != 0",
                         (t0, t1))
@@ -270,7 +270,7 @@ def create_app(bark: BarkApp) -> FastAPI:
                     eps_n[dt.weekday()][dt.hour] += 1     # an episode counts in the hour it started
                     first = False
                 s = min(end, nxt)
-        for r in store.q("SELECT b.ts, COALESCE(b.label_dog_id, b.pred_dog_id) d FROM barks b JOIN episodes e"
+        for r in store.q("SELECT b.ts, NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) d FROM barks b JOIN episodes e"
                          " ON e.id=b.episode_id WHERE b.ts>=? AND b.ts<? AND e.false_positive=0", (t0, t1)):
             if r["d"] == NOT_BARK:
                 continue
@@ -318,10 +318,10 @@ def create_app(bark: BarkApp) -> FastAPI:
             conds = []
             ids = [int(x) for x in sel if x != "u"]
             if ids:
-                conds.append("COALESCE(b.label_dog_id, b.pred_dog_id) IN (%s)" % ",".join("?" * len(ids)))
+                conds.append("NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) IN (%s)" % ",".join("?" * len(ids)))
                 args.extend(ids)
             if "u" in sel:
-                conds.append("COALESCE(b.label_dog_id, b.pred_dog_id) IS NULL")
+                conds.append("NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) IS NULL")
             where.append("EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND (%s))" % " OR ".join(conds))
         if kind == "not_bark":
             where.append("e.false_positive=1")
@@ -341,10 +341,10 @@ def create_app(bark: BarkApp) -> FastAPI:
         if dog:
             if dog == "u":
                 where.append("EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND"
-                             " COALESCE(b.label_dog_id, b.pred_dog_id) IS NULL)")
+                             " NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) IS NULL)")
             else:
                 where.append("EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND"
-                             " COALESCE(b.label_dog_id, b.pred_dog_id) = ?)")
+                             " NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) = ?)")
                 args.append(int(dog))
         w = " AND ".join(where)
         total = store.q1(f"SELECT COUNT(*) n FROM episodes e WHERE {w}", args)["n"]
@@ -354,7 +354,7 @@ def create_app(bark: BarkApp) -> FastAPI:
         for e in rows:
             s = {}
             n = lab = 0
-            for r in store.q("SELECT COALESCE(label_dog_id, pred_dog_id) d, COUNT(*) n,"
+            for r in store.q("SELECT NULLIF(COALESCE(label_dog_id, pred_dog_id), -1) d, COUNT(*) n,"
                              " SUM(label_dog_id IS NOT NULL) lab FROM barks WHERE episode_id=? GROUP BY d", (e["id"],)):
                 n += r["n"]
                 lab += r["lab"] or 0
@@ -481,7 +481,7 @@ def create_app(bark: BarkApp) -> FastAPI:
             raise HTTPException(400, "size must be small, medium or large")
 
     def _check_dog(dog_id):
-        if dog_id not in (None, NOT_BARK) and not store.q1("SELECT 1 FROM dogs WHERE id=?", (dog_id,)):
+        if dog_id not in (None, NOT_BARK, -1) and not store.q1("SELECT 1 FROM dogs WHERE id=?", (dog_id,)):
             raise HTTPException(400, "unknown dog")
 
     # ---- dogs -----------------------------------------------------------------
