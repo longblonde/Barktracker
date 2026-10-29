@@ -61,3 +61,11 @@ backup:
   interval_hours: 24
   keep: 7                      # database snapshots kept on the drive
   include_clips: true          # copy the recordings too
+
+dev:                           # experimental, off by default (Settings > System > Developer)
+  array: false                 # dual-microphone direction test page
+  array_mode: stereo           # stereo = the main mic's two channels; pair = main + a second USB mic
+  array_device: null           # pair mode: second microphone (part of its name)
+  array_spacing_cm: 7          # distance between the two microphones
+  array_offset_ms: 0           # pair mode: clock offset, set by Calibrate
+  array_swap: false            # mic A is on the other side

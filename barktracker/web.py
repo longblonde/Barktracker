@@ -793,6 +793,34 @@ def create_app(bark: BarkApp) -> FastAPI:
             c.execute("DELETE FROM missed WHERE id=?", (mid,))
         return {"ok": True}
 
+    # ---- EXPERIMENTAL: dual-microphone direction test ---------------------------------
+    @app.get("/api/array/feed")
+    def array_feed(since: int = 0):
+        arr = bark.array
+        evs = [e for e in list(arr.events) if e["n"] > since]
+        return {"status": arr.status(), "events": evs,
+                "devices": None if since else _input_names()}
+
+    def _input_names():
+        try:
+            from .audio import list_inputs
+            info = list_inputs()
+            return [d["short"] for d in info["devices"]] + list(info["unlisted"])
+        except Exception:  # noqa: BLE001
+            return []
+
+    @app.post("/api/array/calibrate")
+    def array_calibrate(body: dict = Body(default={})):
+        arr = bark.array
+        if not cfg.dev.array:
+            raise HTTPException(400, "Turn on the direction test first")
+        if body.get("clear"):
+            bark.update_settings({"dev.array_offset_ms": 0})
+            arr.calibrating = False
+        else:
+            arr.calibrating = True
+        return arr.status()
+
     @app.get("/api/tuning/suggest")
     def tuning_suggest():
         return T.suggest(store, cfg)

@@ -80,6 +80,17 @@ class UiConfig:
 
 
 @dataclass
+class DevConfig:
+    """Experimental features, off by default."""
+    array: bool = False                  # dual-microphone direction test page (Settings > System)
+    array_mode: str = "stereo"           # stereo = the main mic's two channels; pair = main + second mic
+    array_device: str | None = None      # second microphone for pair mode (part of its name)
+    array_spacing_cm: float = 7.0        # distance between the two microphones
+    array_offset_ms: float = 0.0         # pair mode: clock offset between the mics (set by calibrating)
+    array_swap: bool = False             # mic A is on the other side
+
+
+@dataclass
 class BackupConfig:
     path: str | None = None              # USB drive folder, e.g. /mnt/barktracker-backup (see README)
     enabled: bool = True                 # back up automatically when a path is set
@@ -101,6 +112,7 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     ui: UiConfig = field(default_factory=UiConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
+    dev: DevConfig = field(default_factory=DevConfig)
 
     @property
     def data_path(self) -> Path:

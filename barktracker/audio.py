@@ -33,6 +33,16 @@ def read_wav(path: str) -> tuple[np.ndarray, int]:
     return x, sr
 
 
+def read_wav_channels(path: str) -> tuple[np.ndarray, int]:
+    """Like read_wav but keeps the channels apart: (frames x channels)."""
+    with wave.open(path, "rb") as w:
+        sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        raw = w.readframes(w.getnframes())
+    if sw != 2:
+        raise ValueError("only 16-bit WAV files")
+    return (np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0).reshape(-1, ch), sr
+
+
 def list_devices() -> str:
     import sounddevice as sd  # imported lazily: needs PortAudio
     return str(sd.query_devices())
@@ -81,6 +91,7 @@ class MicSource:
         self.device_name = None
         self._restart = threading.Event()
         self._rescan = False
+        self.tap = None              # optional fn(frames x channels, ts, rate) before mono mixing
 
     def switch(self, device) -> None:
         """Move to another input: the open stream closes and reopens on `device` within ~0.5 s."""
@@ -152,6 +163,11 @@ class MicSource:
                     data, ts = self.q.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                if self.tap is not None:
+                    try:
+                        self.tap(data * self.gain, ts, self.sr)
+                    except Exception:  # noqa: BLE001 - an experiment must never stop listening
+                        log.debug("input tap failed", exc_info=True)
                 x = data.mean(axis=1) if data.ndim > 1 else data
                 x = F.resample(x * self.gain, self.sr) if self.sr != F.SR else x * self.gain
                 yield x.astype(np.float32), ts
@@ -167,6 +183,13 @@ class FileSource:
                  block_seconds: float = 0.05, loop: bool = False):
         x, sr = read_wav(path)
         self.x = F.resample(x, sr)
+        self.tap = None
+        self.multi = None
+        with wave.open(path, "rb") as w:
+            ch = w.getnchannels()
+        if ch > 1:                   # keep the channels apart for the experimental direction page
+            raw, _ = read_wav_channels(path)
+            self.multi = np.stack([F.resample(raw[:, c], sr) for c in range(ch)], axis=1)
         self.start_ts = start_ts if start_ts is not None else time.time()
         self.speed = speed  # 0 = as fast as possible, 1 = real time
         self.block = int(F.SR * block_seconds)
@@ -179,6 +202,12 @@ class FileSource:
                 chunk = self.x[i:i + self.block]
                 if self.speed > 0:
                     time.sleep(len(chunk) / F.SR / self.speed)
+                if self.tap is not None:
+                    block = self.multi[i:i + self.block] if self.multi is not None else chunk[:, None]
+                    try:
+                        self.tap(block, t0 + i / F.SR, F.SR)
+                    except Exception:  # noqa: BLE001
+                        log.debug("input tap failed", exc_info=True)
                 yield chunk, t0 + i / F.SR
             if not self.loop:
                 return

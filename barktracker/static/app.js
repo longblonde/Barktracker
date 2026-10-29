@@ -196,7 +196,7 @@ function navigate() {
   const [, name = "", arg] = location.hash.split("/");
   route.name = name || "overview"; route.arg = arg;
   if (name === "clip") route.name = "clip";
-  clearTimeout(S.tuneTimer);
+  clearTimeout(S.tuneTimer); clearTimeout(S.arrTimer);
   document.querySelectorAll("[data-nav]").forEach((a) => a.toggleAttribute("aria-current", false));
   const navName = route.name === "clip" ? "clips" : route.name === "missed" ? "tune" : route.name;
   $(`[data-nav="${navName}"]`)?.setAttribute("aria-current", "page");
@@ -204,7 +204,7 @@ function navigate() {
   document.body.classList.toggle("kiosk", route.name === "live");
   if (route.name === "ordinance" || route.name === "system") { location.replace(`#/settings/${route.name === "ordinance" ? "code" : "system"}`); return; }
   ({ overview: renderOverview, clips: renderClips, clip: renderClip, dogs: renderDogs, report: renderReport, settings: renderSettings, live: renderLive,
-     tune: renderTune, missed: renderMissed }[route.name] || renderOverview)();
+     tune: renderTune, missed: renderMissed, array: renderArray }[route.name] || renderOverview)();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", navigate);
@@ -1217,7 +1217,17 @@ function drawSystem(st) {
     <p class="small muted intro">Live microphone level. Grey is the background noise the Pi has learned; sounds above the dashed line wake the bark detector.</p>
     <div class="two"><dl class="kv" id="detKv"></dl><dl class="kv" id="sysKv"></dl></div>
     <div class="row"><a class="btn" href="/api/export.csv">Download full log as CSV</a></div>
+    <h3>Developer</h3>
+    <label class="check"><input type="checkbox" id="devArray" ${st.values["dev.array"] ? "checked" : ""}> Dual-microphone direction test
+      <span class="help">Experimental. Adds a “Direction (dev)” page that estimates which way each sound came from, using the webcam's two channels or a second USB microphone. It only watches; detection and the log are unchanged.</span></label>
   </div>`;
+  $("#devArray").onchange = async (e) => {
+    try {
+      await api("/api/settings", { method: "PUT", body: { values: { "dev.array": e.target.checked } } });
+      arrayNav(e.target.checked);
+      toast(e.target.checked ? "Direction test on: see Direction (dev) in the menu" : "Direction test off");
+    } catch (err) { toast(err.message); }
+  };
   S.settingsInfo = st.info;
   renderSystemLive();
   drawMics(st.values["audio.device"]);
@@ -1680,5 +1690,6 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && route.na
 
 // -------------------------------------------------------------------- go
 Beat.start();
+arrayNav();
 pollStatus().finally(navigate);
 setInterval(pollStatus, 2000);

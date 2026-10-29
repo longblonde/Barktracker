@@ -160,6 +160,17 @@ The **Tuning** page shows the last minute live: a spectrogram, the level against
 
 Captures you don't review are removed with the clip retention.
 
+## Experimental: direction test
+
+Settings → System → Developer → **Dual-microphone direction test** adds a **Direction (dev)** page. It's a test bench for whether a second microphone helps tell dogs apart by where they bark from; it only watches, and detection, the log and reports are unchanged. Turn it off and the page disappears.
+
+For every sound the detector considers, it estimates a bearing from the time difference between two microphones (GCC-PHAT on the bark band) and plots it on a 0–180° half-circle: 0° toward mic A, 180° toward mic B, 90° straight ahead (or behind; two mics can't tell front from back). The same numbered tags ride on a live spectrogram underneath, and a table lists each estimate's delay, clarity and the level difference between the mics. A dog in a fixed kennel should keep landing in the same place.
+
+- **Stereo:** the main microphone's own two channels (the C920 has two capsules a few centimetres apart). One clock, so timing is exact, but the small spacing makes the angle coarse. Measure the spacing between the mic holes and enter it.
+- **Pair:** the main microphone plus a second USB microphone, ideally a metre or more apart for a finer angle. Two USB devices run on separate clocks, so press **Calibrate** and clap once straight ahead (90°) to measure the offset between them; it drifts, so recalibrate now and then. The level difference between the mics needs no calibration and is useful on its own, for example with one mic in a dish aimed at a kennel.
+
+Two microphones give a direction, not a distance.
+
 ## Backup and restore
 
 SD cards wear out. Point Barktracker at a USB drive and it keeps a copy of everything you'd hate to lose: the log database (every episode and bark, your dogs and neighbor details, every label you've given and the bark features behind them, which is all the training data for dog matching and "Not a bark"), your settings, ordinance and contacts, the recordings, your live-band pictures and `config.yaml`.

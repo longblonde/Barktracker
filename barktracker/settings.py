@@ -54,6 +54,12 @@ SPECS = {s.key: s for s in [
     Spec("backup.interval_hours", "float", 1, 720),
     Spec("backup.keep", "int", 1, 90),
     Spec("backup.include_clips", "bool"),
+    Spec("dev.array", "bool"),
+    Spec("dev.array_mode", "str"),
+    Spec("dev.array_device", "str"),
+    Spec("dev.array_spacing_cm", "float", 0.5, 2000),
+    Spec("dev.array_offset_ms", "float", -1000, 1000),
+    Spec("dev.array_swap", "bool"),
 ]}
 
 
@@ -92,6 +98,10 @@ def coerce(key: str, value):
         v = (value or "").strip()
         if key == "notify.webhook_url" and v and not v.startswith(("http://", "https://")):
             raise ValueError("Webhook address must start with http:// or https://")
+        if key == "dev.array_mode":
+            if v not in ("stereo", "pair"):
+                raise ValueError("Array mode is stereo or pair")
+            return v
         return v or None
     try:
         v = float(value)

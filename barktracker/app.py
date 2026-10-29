@@ -47,6 +47,10 @@ class BarkApp:
         if source is not None and hasattr(source, "switch"):      # mic choice / boost saved from the dashboard
             source.device = cfg.audio.device
             source.gain = 10 ** (cfg.audio.gain_db / 20)
+        from .array import ArrayMonitor          # experimental direction test (off unless enabled)
+        self.array = ArrayMonitor(cfg, self)
+        if source is not None and hasattr(source, "tap"):
+            source.tap = self.array.on_tap
         self.detector: BarkDetector | None = None
         self.stop = threading.Event()
         self.error: str | None = None
@@ -62,6 +66,7 @@ class BarkApp:
         if start_detector:          # only the running service prunes clips and backs up (not one-off commands)
             self._spawn(self._maintenance_loop, "maintenance")
             self._spawn(self._backup_loop, "backup")
+            self.array.start()
 
     def _keep_ordinance(self) -> None:
         """Installs from before the generic default (v0.11) ran on the Burnsville rules without saving
@@ -275,6 +280,8 @@ class BarkApp:
         self._settings_side_effects(list(settings_mod.SPECS))
 
     def _settings_side_effects(self, changed: list[str]) -> None:
+        if any(k.startswith("dev.array") for k in changed):
+            self.array.reconfigure()
         if "audio.device" in changed and hasattr(self.source, "switch"):
             self.source.switch(self.cfg.audio.device)
         if "audio.gain_db" in changed and hasattr(self.source, "gain"):
@@ -329,6 +336,7 @@ class BarkApp:
 
     def shutdown(self):
         self.stop.set()
+        self.array.stop()
         if self.detector:
             try:
                 self.detector.flush()

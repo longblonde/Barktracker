@@ -542,3 +542,13 @@ body.kiosk .beat-row { flex-direction: column; align-items: center; }
 .cand-table td.num, .cand-table td:nth-child(-n+2) { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cand-table tr.sel td { background: color-mix(in srgb, var(--ok-bark) 10%, transparent); }
 .pool-row .state.new { color: var(--ink); font-weight: 600; }
+
+/* ---- EXPERIMENTAL direction test ---- */
+.exp-pill { font: 600 12px/1 var(--body); vertical-align: middle; padding: 3px 8px; border-radius: 999px; border: 1px dashed var(--muted); color: var(--muted); }
+.arr-polar { width: 100%; height: 300px; display: block; }
+.arr-hist-key { display: inline-block; width: 14px; height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--ok-bark) 25%, transparent); margin-right: 5px; vertical-align: -1px; }
+.arr-form { display: grid; gap: 12px; }
+.arr-modes { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
+.arr-notes { padding-left: 18px; margin: 6px 0 0; display: grid; gap: 4px; }
+@media (max-width: 640px) { .arr-polar { height: 220px; } }
+.arr-modes .help { display: block; margin-left: 26px; }
