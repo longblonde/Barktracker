@@ -32,6 +32,8 @@ BUFFER_SECONDS = 20.0
 WINDOW = (-0.05, 0.35)           # seconds around a sound's onset used for the estimate
 PAIR_SLACK = 0.25                # extra lag searched in pair mode (two clocks are never in step)
 BAND = (300.0, 4000.0)           # bark band used for the correlation
+KEEP_SECONDS = 15 * 60           # estimates older than this are dropped from memory
+MAX_PER_PASS = 8                 # estimates per 0.25 s pass, so a noisy yard can't hog the Pi's CPU
 
 
 def gcc_phat(a: np.ndarray, b: np.ndarray, sr: int, max_tau: float, interp: int = 16,
@@ -45,14 +47,23 @@ def gcc_phat(a: np.ndarray, b: np.ndarray, sr: int, max_tau: float, interp: int 
     R /= np.abs(R) + 1e-12
     f = np.fft.rfftfreq(n, 1.0 / sr)
     R[(f < band[0]) | (f > band[1])] = 0
-    cc = np.fft.irfft(R, n * interp)
-    half = n * interp // 2 - 1
-    m = max(1, min(int(interp * sr * max_tau), half))
-    w = max(m, min(int(interp * sr * 0.005), half))     # judge the peak against +-5 ms of lags
+    cc = np.fft.irfft(R, n)                              # coarse: one value per sample
+    half = n // 2 - 1
+    m = max(1, min(int(math.ceil(sr * max_tau)), half))
+    w = max(m, min(int(sr * 0.005), half))               # judge the peak against +-5 ms of lags
     cc = np.abs(np.concatenate((cc[-w:], cc[:w + 1])))
     k = w - m + int(np.argmax(cc[w - m:w + m + 1]))
     sharp = float(cc[k] / (np.mean(cc) + 1e-12))
-    return (k - w) / float(interp * sr), sharp
+    # fine: evaluate the correlation only around that peak, at 1/interp of a sample, straight
+    # from the spectrum (much cheaper than an interp-times longer inverse FFT)
+    lag0 = k - w
+    lags = lag0 + np.arange(-interp, interp + 1) / interp
+    keep = np.nonzero(R)[0]
+    ph = np.exp(2j * np.pi * np.outer(lags, keep) / n)
+    fine = np.abs((ph * R[keep]).real.sum(axis=1))
+    best = float(lags[int(np.argmax(fine))])
+    best = max(-sr * max_tau, min(sr * max_tau, best))
+    return best / sr, sharp
 
 
 def angle_from_tau(tau: float, spacing_m: float) -> tuple[float, bool]:
@@ -222,6 +233,8 @@ class ArrayMonitor:
             return 0
         n = 0
         for ev in evs:
+            if n >= MAX_PER_PASS:
+                break                         # a burst of sounds is worked through over a few passes
             if ev["id"] in self.done or ev.get("soft"):
                 continue
             if now < ev["ts"] + WINDOW[1] + 0.3:
@@ -232,8 +245,11 @@ class ArrayMonitor:
                     n += 1
             except Exception:  # noqa: BLE001
                 log.exception("Array estimate failed")
-        if len(self.done) > 2000:
-            self.done &= {e["id"] for e in evs}
+        # forget what's no longer needed: ids the detector has dropped, and old estimates
+        self.done &= {e["id"] for e in evs}
+        cutoff = now - KEEP_SECONDS
+        while self.events and self.events[0]["ts"] < cutoff:
+            self.events.popleft()
         return n
 
     # ---- estimates --------------------------------------------------------------------------

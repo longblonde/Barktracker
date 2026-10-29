@@ -3,7 +3,7 @@
 // Settings > System. Self-contained on purpose so it can be reworked or removed without touching
 // the rest of the dashboard. Uses app.js helpers at call time (api, $, esc, toast, view, route, S, LUT).
 
-const ARR = { N: 1200, FRAME: 800, keep: 40 };
+const ARR = { N: 1200, FRAME: 800, keep: 40, MAX: 200, MAX_AGE: 15 * 60, MAX_TAGS: 80 };
 const ARR_KIND = {
   bark: ["Bark", "var(--ok-bark)"], not_bark: ["Not bark-like", "var(--caution)"],
   quiet: ["Too quiet", "var(--muted)"], filtered: ["Filtered", "var(--danger)"],
@@ -28,9 +28,9 @@ async function renderArray() {
         <p class="sub">Estimates which way each sound came from, using two microphones. It only watches: nothing here changes what's detected or logged.</p></div>
     </section>
     <section class="panel arr-polar-panel">
-      <div class="row spread"><h2>Bearing</h2><span class="small muted" id="arrStatus"></span></div>
+      <div class="row spread"><h2>Bearing</h2><span class="row"><span class="small muted" id="arrStatus"></span><button type="button" class="btn" id="arrReset">Clear chart</button></span></div>
       <canvas id="arrPolar" class="arr-polar" aria-label="Estimated direction of recent sounds, 0 to 180 degrees"></canvas>
-      <div class="legend">${Object.values(ARR_KIND).map(([t, c]) => `<span style="--c:${c}">${t}</span>`).join("")}<span class="nodot"><i class="arr-hist-key"></i>Barks so far (spread)</span></div>
+      <div class="legend">${Object.values(ARR_KIND).map(([t, c]) => `<span style="--c:${c}">${t}</span>`).join("")}<span class="nodot"><i class="arr-hist-key"></i><span id="arrHistKey">Barks so far (spread)</span></span></div>
       <p class="small muted" style="margin:6px 0 0">0° points at mic A, 180° at mic B, 90° is straight ahead (or straight behind: two mics can't tell front from back). Newest sounds sit on the outer ring. A kennel that doesn't move should land in the same place every time.</p>
     </section>
     <section class="panel tl-panel">
@@ -80,16 +80,32 @@ async function renderArray() {
       "dev.array_spacing_cm": Number(form.elements["dev.array_spacing_cm"].value),
       "dev.array_swap": form.elements["dev.array_swap"].checked,
     };
-    try { await api("/api/settings", { method: "PUT", body: { values: vals } }); toast("Saved; the estimates start afresh"); events.length = 0; byId.clear(); }
+    try { await api("/api/settings", { method: "PUT", body: { values: vals } }); toast("Saved; the estimates start afresh"); resetChart(); drawPolar(); drawTable(); }
     catch (e) { toast(e.message); }
   };
   $("#arrCal").onclick = async () => { try { await api("/api/array/calibrate", { method: "POST", body: {} }); toast("Now clap once, straight ahead"); } catch (e) { toast(e.message); } };
   $("#arrCalClear").onclick = async () => { try { await api("/api/array/calibrate", { method: "POST", body: { clear: true } }); toast("Calibration cleared"); } catch (e) { toast(e.message); } };
 
-  // ---- state
-  const events = [...first.events];                  // direction estimates, oldest first
-  const byId = new Map(events.map((e) => [e.id, e])); // detector event id -> estimate
-  let since = events.length ? events[events.length - 1].n : 0, status = first.status;
+  // ---- state: only recent estimates are kept (newest 200, last 15 minutes); the spread fan
+  // keeps running counts, so it covers the whole visit without holding every sound
+  const gen = S.arrGen = (S.arrGen || 0) + 1;       // a newer visit to the page stops this one's loop
+  const events = [];                                  // direction estimates, oldest first
+  const byId = new Map();                             // detector event id -> estimate
+  const bins = new Array(36).fill(0);
+  let binTotal = 0;
+  function addEvents(list) {
+    for (const e of list) {
+      events.push(e); byId.set(e.id, e);
+      if (e.valid && e.kind === "bark") { bins[Math.min(35, Math.floor(e.angle / 5))]++; binTotal++; }
+    }
+    const cutoff = Date.now() / 1000 - ARR.MAX_AGE;
+    let drop = Math.max(0, events.length - ARR.MAX);
+    while (drop < events.length && events[drop].ts < cutoff) drop++;
+    if (drop) for (const e of events.splice(0, drop)) byId.delete(e.id);
+  }
+  function resetChart() { events.length = 0; byId.clear(); bins.fill(0); binTotal = 0; sel = null; }
+  addEvents(first.events);
+  let since = first.events.length ? first.events[first.events.length - 1].n : 0, status = first.status;
   const live = { last: -1, since: 0, ev: [] };
   let sel = null;
   const off = document.createElement("canvas");
@@ -112,16 +128,16 @@ async function renderArray() {
   function drawPolar() {
     const c = $("#arrPolar"); if (!c) return;
     const dpr = window.devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
-    c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+    if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
     const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
     const css = getComputedStyle(document.body), ink = css.getPropertyValue("--ink"), muted = css.getPropertyValue("--muted"), faint = css.getPropertyValue("--faint");
     const cx = W / 2, cy = H - 24, R = Math.min(W / 2 - 40, H - 44);
     const pt = (deg, r) => [cx - Math.cos((deg * Math.PI) / 180) * r, cy - Math.sin((deg * Math.PI) / 180) * r];
     g.font = `12px ${css.fontFamily}`;
-    // spread of all valid bark estimates: 5 degree wedges
-    const bins = new Array(36).fill(0);
-    events.forEach((e) => { if (e.valid && e.kind === "bark") bins[Math.min(35, Math.floor(e.angle / 5))]++; });
+    g.clearRect(0, 0, W, H);
+    // spread of every clear bark estimate this visit: 5 degree wedges (running counts)
     const mx = Math.max(1, ...bins);
+    const hk = $("#arrHistKey"); if (hk) hk.textContent = `Barks so far (${binTotal})`;
     g.fillStyle = css.getPropertyValue("--ok-bark"); g.globalAlpha = 0.18;
     bins.forEach((n, i) => {
       if (!n) return;
@@ -168,7 +184,7 @@ async function renderArray() {
     if (spec.width !== Math.round(W * dpr)) { spec.width = Math.round(W * dpr); spec.height = Math.round(spec.clientHeight * dpr); }
     spec.getContext("2d").drawImage(off, 0, 0, spec.width, spec.height);
     let right = -Infinity;
-    lane.innerHTML = live.ev.map((de) => {
+    lane.innerHTML = live.ev.slice(-ARR.MAX_TAGS).map((de) => {
       const e = byId.get(de.id), x = xOf(de.idx, W);
       if (x < 0) return "";
       const kind = ARR_KIND[de.kind] || ARR_KIND.quiet;
@@ -201,13 +217,13 @@ async function renderArray() {
   $("#arrLane").addEventListener("pointermove", (ev) => { const t = ev.target.closest?.(".tag-ev"); if (t && t.dataset.n && sel == null) showDetail(Number(t.dataset.n)); });
 
   async function poll() {
-    if (route.name !== "array") return;
+    if (route.name !== "array" || gen !== S.arrGen) return;
     if (document.hidden) { S.arrTimer = setTimeout(poll, 1000); return; }
     try {
       const [f, a] = await Promise.all([api(`/api/tuning/feed?since_idx=${live.last}&since_event=${live.since}`), api(`/api/array/feed?since=${since}`)]);
       status = a.status;
-      for (const e of a.events) { events.push(e); byId.set(e.id, e); since = e.n; }
-      if (events.length > 300) events.splice(0, events.length - 300);
+      addEvents(a.events);
+      if (a.events.length) since = a.events[a.events.length - 1].n;
       if (f.listening) {
         const raw = atob(f.cols || ""), n = f.levels.length;
         if (n) {
@@ -224,15 +240,18 @@ async function renderArray() {
         for (const e of f.events) if (!e.soft) live.ev.push(e);
         if (f.events.length) live.since = f.events[f.events.length - 1].id;
         live.ev = live.ev.filter((e) => e.idx > live.last - ARR.N * ARR.FRAME);
+        if (live.ev.length > 400) live.ev = live.ev.slice(-400);
         $("#arrLive").textContent = `Background ${Math.round(f.floor)} dBFS`;
       } else $("#arrLive").textContent = "Not listening";
       drawStatus(); drawPolar(); drawLane();
       if (a.events.length) drawTable();
     } catch (_) { $("#arrStatus").textContent = "Can't reach the Pi; retrying…"; }
-    S.arrTimer = setTimeout(poll, 300);
+    if (gen === S.arrGen) S.arrTimer = setTimeout(poll, 300);
   }
   drawTable();
-  window.addEventListener("resize", () => { if (route.name === "array") { drawPolar(); drawLane(); } });
+  $("#arrReset").onclick = () => { resetChart(); drawPolar(); drawTable(); $("#arrDetail").innerHTML = `<span class="muted">Chart cleared.</span>`; };
+  S.arrResize = () => { drawPolar(); drawLane(); };
+  if (!S.arrResizeWired) { S.arrResizeWired = true; window.addEventListener("resize", () => { if (route.name === "array" && S.arrResize) S.arrResize(); }); }
   poll();
 }
 

@@ -123,3 +123,19 @@ def test_off_by_default(tmp_path):
     assert c.post("/api/array/calibrate", json={}).status_code == 400
     assert c.put("/api/settings", json={"values": {"dev.array_mode": "triple"}}).status_code == 400
     app.shutdown()
+
+
+def test_old_estimates_are_flushed(tmp_path):
+    from barktracker.array import KEEP_SECONDS
+    cfg = Config(data_dir=str(tmp_path))
+    cfg.dev.array = True
+    app = BarkApp(cfg, None, start_detector=False)
+    app.detector = BarkDetector(cfg, HeuristicClassifier(), app.store)
+    now = time.time()
+    for i in range(500):                                  # far more than it keeps
+        app.array.events.append({"n": i, "id": i, "ts": now - KEEP_SECONDS - 100 + i})
+    app.array.done.update(range(5000))
+    app.array.process(now=now)
+    assert len(app.array.events) <= 300 and all(e["ts"] >= now - KEEP_SECONDS for e in app.array.events)
+    assert app.array.done == set()                         # nothing the detector still holds
+    app.shutdown()

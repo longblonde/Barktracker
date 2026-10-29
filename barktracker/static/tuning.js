@@ -149,6 +149,7 @@ async function renderTune() {
   };
   wireSuggest(cur);
   const live = { cols: [], last: -1, ev: [], since: 0, first: true, settings: cur, floor: null };
+  const gen = S.tuneGen = (S.tuneGen || 0) + 1;     // a newer visit to the page stops this one's loop
   S.tuneLive = live;
   wireWhatIf($("#whatIf"), cur, () => { drawTimeline(); summarize(); });
   wirePool();
@@ -162,6 +163,7 @@ async function renderTune() {
   let frames = [];                                       // [{idx, level, floor}] newest last
 
   async function poll() {
+    if (gen !== S.tuneGen) return;
     if (route.name !== "tune" || document.hidden) { if (route.name === "tune") S.tuneTimer = setTimeout(poll, 1000); return; }
     try {
       const f = await api(`/api/tuning/feed?since_idx=${live.last}&since_event=${live.since}`);
@@ -188,10 +190,11 @@ async function renderTune() {
       if (f.events.length) live.since = f.events[f.events.length - 1].id;
       const oldest = live.last - N * (live.frame || 800);
       live.ev = live.ev.filter((e) => e.idx > oldest);
+      if (live.ev.length > 400) live.ev = live.ev.slice(-400);   // a noisy minute can't pile up
       $("#tuneStatus").textContent = `Background ${Math.round(f.floor)} dBFS · trigger at ${Math.round(f.trigger_level)} dBFS${f.pending_review ? ` · ${f.pending_review} capture${f.pending_review === 1 ? "" : "s"} to review` : ""}`;
       drawTimeline(); summarize();
     } catch (_) { $("#tuneStatus").textContent = "Can't reach the Pi; retrying…"; }
-    S.tuneTimer = setTimeout(poll, 250);
+    if (gen === S.tuneGen) S.tuneTimer = setTimeout(poll, 250);
   }
 
   function xOf(idx, W) { return W - ((live.last - idx) / (live.frame || 800)) * (W / N); }
@@ -234,7 +237,7 @@ async function renderTune() {
     line((fr) => fr.level, css.getPropertyValue("--ink"), [], 1.2);
     // decision tags
     let right = -Infinity;                        // tags that would overlap the previous one shrink to dots
-    lane.innerHTML = live.ev.map((e) => {
+    lane.innerHTML = live.ev.slice(-150).map((e) => {
       const v = tuneVerdict(e, s), k = TUNE.KINDS[v.kind], x = xOf(e.idx, W);
       if (x < 0) return "";
       const changed = S.whatIf && tuneVerdict(e, live.settings).kind !== v.kind;
@@ -279,7 +282,8 @@ async function renderTune() {
       ? `In the last minute: <strong>${then}</strong> sound${then === 1 ? "" : "s"} counted as barks${S.whatIf ? ` (${now} with the saved settings)` : ""}, ${quiet} too quiet to check, ${nb} not bark-like enough.`
       : `<span class="muted">No sounds over the background in the last minute.</span>`;
   }
-  window.addEventListener("resize", () => { if (route.name === "tune") drawTimeline(); });
+  S.tuneResize = drawTimeline;                       // one resize handler, whichever visit is current
+  if (!S.tuneResizeWired) { S.tuneResizeWired = true; window.addEventListener("resize", () => { if (route.name === "tune" && S.tuneResize) S.tuneResize(); }); }
   poll();
 }
 
