@@ -54,6 +54,9 @@ TUNABLES = [
     Tunable("identify.DIR_FLOOR", "Direction", "Weight left for a dog when a bark comes from elsewhere", "%", 0, 1,
             "Lower trusts direction more when matching.", "pct"),
     Tunable("identify.DIR_UNKNOWN", "Direction", "Weight for dogs whose direction isn't known", "%", 0, 1, kind="pct"),
+    Tunable("clockfix.JUMP_FIX", "Clock", "Fix times when the clock jumps more than", "s", 5, 3600,
+            "After a boot the clock can be minutes off until the time server answers; a bigger jump than "
+            "this shifts everything logged since the boot (and renames its clips)."),
     Tunable("discover.LOOKBACK_DAYS", "Dogs you haven't named", "Look back", "days", 1, 365, kind="int"),
     Tunable("discover.MIN_GROUP", "Dogs you haven't named", "Smallest group", "barks", 3, 500, kind="int"),
     Tunable("discover.MIN_EPISODES", "Dogs you haven't named", "Heard in at least", "clips", 1, 100, kind="int"),

@@ -42,6 +42,8 @@ class BarkApp:
         self._tune_lock = threading.Lock()
         self.restart_pending = False
         self.recover()
+        from . import clockfix
+        clockfix.mark_boot(self.store)           # where this boot's records begin, for a clock fix
         ic = cfg.identify
         self.identifier = DogIdentifier(ic.k, ic.min_labels_per_dog, ic.min_confidence) if ic.enabled else None
         if self.identifier:

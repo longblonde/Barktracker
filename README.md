@@ -41,7 +41,7 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 
 Point the webcam toward where the barking comes from (a window facing the neighbor's yard works well), away from fans and the fridge. Webcams apply automatic gain, so leave the microphone boost at 0 unless barks read quieter than -35 dBFS on the Detection and tuning page.
 
-Timestamps matter for complaints. The Pi 4 has no battery-backed clock, so keep it on the network; Settings → System and every report say whether the clock is synchronized to internet time.
+Timestamps matter for complaints. The Pi 4 has no battery-backed clock, so keep it on the network; Settings → System and every report say whether the clock is synchronized to internet time. After a boot the clock can be minutes off until the time server answers; when it then jumps by more than 30 seconds, everything logged since the boot is moved to the corrected time and its clips renamed to match (the log says "Clock jumped").
 
 ## Install
 
@@ -89,7 +89,7 @@ Each section is a card that opens when you need it (Open all / Close all at the 
 - **Live band and dashboard:** daytime napping and its background-noise threshold, "Hearing a car" notes, and the nap, sit and bark pictures.
 - **Alerts:** a list you add to and remove from, like alarms on a phone. Each alert goes to one place (ntfy, Discord, Slack, or a JSON webhook for Home Assistant and the like) when its condition is met: a clip ends (optionally only if it meets a report rule, or lasts long enough), barking has gone on for N minutes (once per clip, while it's still happening), or a daily or weekly summary at a set time. Each can be limited to quiet hours and to certain dogs. **Test** sends a sample.
 - **Theme:** pick a theme, duplicate one to make your own, change its colors (light and dark), alert color, corner roundness and behavior (BARK words, tab alert, calm motion). A theme can carry its own live band pictures (napping, sitting, barking): copy the current ones in, and the theme then downloads as a .zip with them. Upload a .json or .zip someone shared. Your themes are stored in `data/themes/` and backed up with everything else.
-- **Advanced (debug):** the numbers normally fixed in the code, such as when a clip counts as Unreviewed (bark score under 60%, a match under 75%), how loud a sound must be to show on the bearing chart, how direction weighs into matching, live band timing, and how "Dogs you haven't named" groups barks. Changed values are marked; one button puts them all back.
+- **Advanced (debug):** the numbers normally fixed in the code, such as when a clip counts as Unreviewed (bark score under 60%, a match under 75%), how loud a sound must be to show on the bearing chart, how direction weighs into matching, live band timing, how big a clock jump gets corrected, and how "Dogs you haven't named" groups barks. Changed values are marked; one button puts them all back.
 - **System:** the Pi's model, temperature, power warnings, load, memory, disk and uptime; whether it's listening and on what; detector and clock status; download the whole log as CSV.
 
 Changes are stored on the Pi as overrides of `config.yaml`; "Restore config.yaml values" undoes them.
