@@ -8,8 +8,8 @@ Round 1 answered on 2026-10-30 and built into the branch:
    Settings > Advanced (debug).
 4. Status filter now covers every clip, then paginates.
 5. Households stay as addresses (owner optional). No change.
-6. Discovered dogs: only the examples are labelled (see the explanation in the chat). Open: label the
-   whole group instead?
+6. Discovered dogs: naming a group (or "Not a dog") now labels every bark in it, not just the
+   examples. Barks labelled some other way since the list was shown keep their label.
 7. Weekend quiet hours: added as an option.
 8. Dashboard bearing chart opens on 7 days.
 9. Direction counts in matching by default with two mics. Kept.
@@ -23,4 +23,4 @@ Round 1 answered on 2026-10-30 and built into the branch:
 
 ## Open
 
-- 6: label a whole discovered group at once?
+- None.

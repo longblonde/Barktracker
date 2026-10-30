@@ -721,7 +721,7 @@ def create_app(bark: BarkApp) -> FastAPI:
                 "spec": {"width": img.shape[1], "height": img.shape[0],
                          "data": base64.b64encode(img[::-1].tobytes()).decode()}}
 
-    _disc = {"t": 0.0, "v": None}
+    _disc = {"t": 0.0, "v": None, "ids": {}}
 
     @app.get("/api/dogs/discovered")
     def dogs_discovered(fresh: bool = False):
@@ -735,9 +735,19 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     @app.post("/api/dogs/discovered/{key}")
     def adopt_discovered(key: str, body: dict = Body(...)):
-        """Name a discovered group: label the example barks you listened to (as a new dog, a dog you
-        already have, or not a dog), then re-match so its other barks follow."""
-        ids = [int(x) for x in body.get("bark_ids") or []]
+        """Name a discovered group: label all its barks (as a new dog, a dog you already have, or not
+        a dog), then re-match. The group is the one last listed; `bark_ids` labels just those barks."""
+        if body.get("bark_ids"):
+            ids = [int(x) for x in body["bark_ids"]]
+        else:
+            if key not in _disc.get("ids", {}):
+                dogs_discovered(fresh=True)
+            ids = _disc["ids"].get(key)
+            if not ids:
+                raise HTTPException(409, "That group has changed; reload the page")
+            # barks labelled since the list was made keep their label
+            ids = [r["id"] for r in store.q(
+                f"SELECT id FROM barks WHERE label_dog_id IS NULL AND id IN ({','.join('?' * len(ids))})", ids)]
         if not ids:
             raise HTTPException(400, "No barks to label")
         dog_id = body.get("dog_id")
@@ -752,8 +762,8 @@ def create_app(bark: BarkApp) -> FastAPI:
         store.label_barks(ids, int(dog_id))
         for e in {r["episode_id"] for r in store.q(f"SELECT DISTINCT episode_id FROM barks WHERE id IN ({','.join('?' * len(ids))})", ids)}:
             store.refresh_episode_flags(e)
-        _disc["v"] = None
-        return {"dog_id": dog_id, "identifier": bark.retrain()}
+        _disc.update(v=None, ids={})
+        return {"dog_id": dog_id, "labelled": len(ids), "identifier": bark.retrain()}
 
     @app.get("/api/bearings")
     def bearings(ds: str | None = Query(None, alias="date"), days: int = 1, dogs: str | None = None):

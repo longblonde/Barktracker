@@ -152,7 +152,7 @@ async function loadDiscovered(r) {
   }
   const opts = Object.values(S.dogs).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
   box.innerHTML = `<h2>Dogs you haven't named <span class="count">${d.groups.length}</span></h2>
-    <p class="small muted sec-sub">Unidentified barks that sound alike${S.status ? "" : ""} and keep coming back. Listen to the examples; if it's one dog, name it (or say which dog it is). Only the examples are labelled; the rest follow when the Pi re-matches.</p>
+    <p class="small muted sec-sub">Unidentified barks that sound alike${S.status ? "" : ""} and keep coming back. Listen to the examples; if it's one dog, name it (or say which dog it is). All the group's barks are labelled.</p>
     <div class="disc-grid">${d.groups.map((g, i) => `
       <div class="panel disc" data-g="${i}">
         <div class="row spread"><strong>Voice ${String.fromCharCode(65 + i)}</strong><span class="small muted">${g.barks} barks · ${g.episodes} clips · ${g.days} day${g.days === 1 ? "" : "s"}</span></div>
@@ -163,25 +163,25 @@ async function loadDiscovered(r) {
           <input type="text" placeholder="Name this dog" data-name maxlength="40" aria-label="Name for this dog">
           <button type="button" class="btn primary" data-new>Add</button>
           ${opts ? `<select data-which aria-label="Or it's one of your dogs"><option value="">…or it's</option>${opts}</select>` : ""}
-          <button type="button" class="btn" data-nb title="Mark the examples as “Not a bark”">Not a dog</button>
+          <button type="button" class="btn" data-nb title="Mark the group's barks as “Not a bark”">Not a dog</button>
         </div>
       </div>`).join("")}</div>`;
   box.querySelectorAll(".disc").forEach((el) => {
-    const g = d.groups[Number(el.dataset.g)], ids = g.samples.map((s) => s.bark_id);
+    const g = d.groups[Number(el.dataset.g)];
     el.querySelectorAll(".sample").forEach((b) => b.onclick = () => { const s = g.samples[Number(b.dataset.s)]; playSegment(b, s.episode_id, s.offset, s.duration); });
     const assign = async (body, msg) => {
-      try { await api(`/api/dogs/discovered/${g.key}`, { method: "POST", body: { bark_ids: ids, ...body } }); toast(msg); renderDogs(); }
+      try { const r = await api(`/api/dogs/discovered/${g.key}`, { method: "POST", body }); toast(msg(r.labelled)); renderDogs(); }
       catch (e) { toast(e.message); }
     };
     el.querySelector("[data-new]").onclick = () => {
       const n = el.querySelector("[data-name]").value.trim();
       if (!n) { el.querySelector("[data-name]").focus(); return toast("Type a name first"); }
-      assign({ new_name: n }, `Added ${n} with ${ids.length} example barks`);
+      assign({ new_name: n }, (k) => `Added ${n} with ${k} bark${k === 1 ? "" : "s"}`);
     };
     el.querySelector("[data-name]").onkeydown = (e) => { if (e.key === "Enter") el.querySelector("[data-new]").click(); };
     const w = el.querySelector("[data-which]");
-    if (w) w.onchange = () => { if (w.value) assign({ dog_id: Number(w.value) }, `Labelled ${ids.length} barks as ${S.dogs[w.value].name}`); };
-    el.querySelector("[data-nb]").onclick = () => assign({ dog_id: 0 }, "Marked as not a bark");
+    if (w) w.onchange = () => { if (w.value) assign({ dog_id: Number(w.value) }, (k) => `Labelled ${k} bark${k === 1 ? "" : "s"} as ${S.dogs[w.value].name}`); };
+    el.querySelector("[data-nb]").onclick = () => assign({ dog_id: 0 }, (k) => `Marked ${k} bark${k === 1 ? "" : "s"} as not a bark`);
   });
 }
 

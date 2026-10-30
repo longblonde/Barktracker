@@ -156,6 +156,34 @@ def test_discovered_dog_groups(tmp_path):
     assert list(rh.values())[0]["pause_s"] == 2.0              # 5 barks over 10 s: one every 2 s
 
 
+def test_label_whole_discovered_group(tmp_path):
+    app = BarkApp(Config(data_dir=str(tmp_path), timezone=TZ), None, start_detector=False)
+    store, c = app.store, TestClient(create_app(app))
+    rng = np.random.default_rng(3)
+    a, b = np.zeros(NF), np.zeros(NF)
+    b[:5] = 3.0
+    t = time.time() - 5 * 86400
+    for i in range(6):
+        episode(store, t + i * 40000, 10, 5, None)
+        episode(store, t + i * 40000 + 500, 10, 5, None)
+    rows = store.q("SELECT id, episode_id FROM barks ORDER BY id")
+    eps = sorted({r["episode_id"] for r in rows})
+    with store.tx() as tx:
+        for r in rows:
+            v = _voice(rng, a if eps.index(r["episode_id"]) % 2 == 0 else b)
+            tx.execute("UPDATE barks SET features=? WHERE id=?", (v.tobytes(), r["id"]))
+    g = c.get("/api/dogs/discovered").json()["groups"][0]
+    rex = store.add_dog("Rex")["id"]
+    store.label_barks([g["samples"][0]["bark_id"]], rex)        # labelled since the list was made
+    r = c.post(f"/api/dogs/discovered/{g['key']}", json={"new_name": "Pip"})
+    assert r.status_code == 200 and r.json()["labelled"] == 29
+    pip = r.json()["dog_id"]
+    labels = [x["label_dog_id"] for x in store.q("SELECT label_dog_id FROM barks WHERE label_dog_id IS NOT NULL")]
+    assert labels.count(pip) == 29 and labels.count(rex) == 1   # the earlier label is kept
+    assert len(c.get("/api/dogs/discovered?fresh=1").json()["groups"]) == 1
+    assert c.post("/api/dogs/discovered/g999999", json={"dog_id": rex}).status_code == 409
+
+
 def test_direction_weighs_into_matching(tmp_path):
     store = Store(tmp_path / "db.sqlite")
     from barktracker.array import ensure_schema
