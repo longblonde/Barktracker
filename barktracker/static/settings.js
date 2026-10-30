@@ -237,9 +237,21 @@ async function drawTheme() {
   const wire = () => {
     el.querySelectorAll("[data-use]").forEach((b) => b.onclick = async () => after(await api("/api/themes/active", { method: "PUT", body: { id: b.dataset.use } }), "Theme changed"));
     el.querySelectorAll("[data-scheme]").forEach((b) => b.onclick = () => { scheme = b.dataset.scheme; draw(); });
-    $("#thDup").onclick = async () => {
-      const name = prompt("Name for your copy", `${act.name} (mine)`); if (!name) return;
-      try { after(await api("/api/themes", { method: "POST", body: { ...edit, name, copy_pictures_from: act.id } }), `Made “${name}”: change it below`); } catch (e) { toast(e.message); }
+    $("#thDup").onclick = () => {                 // name the copy right here (no pop-up: some browsers block them)
+      const btn = $("#thDup");
+      if ($("#thDupRow")) { $("#thDupName").focus(); return; }
+      btn.insertAdjacentHTML("afterend", `<span class="row inline-edit" id="thDupRow">
+        <input type="text" id="thDupName" value="${esc(act.name)} (mine)" maxlength="40" aria-label="Name for your copy">
+        <button type="button" class="btn primary" id="thDupGo">Make copy</button><button type="button" class="btn" id="thDupNo">Cancel</button></span>`);
+      const inp = $("#thDupName"); inp.focus(); inp.select();
+      const go = async () => {
+        const name = inp.value.trim(); if (!name) { inp.focus(); return; }
+        try { after(await api("/api/themes", { method: "POST", body: { ...edit, name, copy_pictures_from: act.id } }), `Made “${name}”: change it below`); }
+        catch (e) { toast(e.message); }
+      };
+      $("#thDupGo").onclick = go;
+      inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } else if (e.key === "Escape") $("#thDupRow").remove(); };
+      $("#thDupNo").onclick = () => $("#thDupRow").remove();
     };
     const del = $("#thDel");
     if (del) del.onclick = async () => { if (confirm(`Delete “${act.name}”?`)) after(await api(`/api/themes/${act.id}`, { method: "DELETE" }), "Theme deleted"); };

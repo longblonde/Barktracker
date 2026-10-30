@@ -117,15 +117,22 @@ function wireDogs(r) {
     if (!confirm(`Remove ${d.name}? Their barks stay in the log as unidentified.`)) return;
     await api(`/api/dogs/${d.id}`, { method: "DELETE" }); toast(`${d.name} removed`); renderDogs();
   }));
-  view.querySelectorAll("[data-edithome]").forEach((b) => b.onclick = async () => {
-    const sec = b.closest(".household"), old = sec.dataset.home;
+  view.querySelectorAll("[data-edithome]").forEach((b) => b.onclick = () => {     // edit in place (no pop-ups)
+    const sec = b.closest(".household"), old = sec.dataset.home, head = sec.querySelector(".home-head");
+    if (sec.querySelector(".home-edit")) return;
     const dogs = r.dogs.filter((d) => (d.address || "").trim() === old);
-    const addr = prompt("Household address", old);
-    if (addr === null) return;
-    const owner = prompt("Owner (optional)", dogs.find((d) => d.owner)?.owner || "");
-    if (owner === null) return;
-    await Promise.all(dogs.map((d) => api(`/api/dogs/${d.id}`, { method: "PATCH", body: { address: addr.trim(), owner: owner.trim() } })));
-    toast("Household saved"); renderDogs();
+    head.insertAdjacentHTML("afterend", `<div class="row inline-edit home-edit">
+      <label class="small muted">Address <input type="text" class="he-addr" value="${esc(old)}" maxlength="120"></label>
+      <label class="small muted">Owner <input type="text" class="he-owner" value="${esc(dogs.find((d) => d.owner)?.owner || "")}" maxlength="80" placeholder="optional"></label>
+      <button type="button" class="btn primary he-save">Save</button><button type="button" class="btn he-no">Cancel</button></div>`);
+    const box = sec.querySelector(".home-edit");
+    box.querySelector(".he-addr").focus();
+    box.querySelector(".he-no").onclick = () => box.remove();
+    box.querySelector(".he-save").onclick = async () => {
+      const addr = box.querySelector(".he-addr").value.trim(), owner = box.querySelector(".he-owner").value.trim();
+      await Promise.all(dogs.map((d) => api(`/api/dogs/${d.id}`, { method: "PATCH", body: { address: addr, owner } })));
+      toast("Household saved"); renderDogs();
+    };
   });
   view.querySelectorAll("[data-filter]").forEach((a) => a.addEventListener("click", () => { Object.assign(S.clipFilters, { dog: a.dataset.filter, offset: 0, tag: "" }); }));
   view.querySelectorAll("[data-report]").forEach((a) => a.addEventListener("click", () => { S.report = { ...(S.report || {}), subject: `dog:${a.dataset.report}` }; }));

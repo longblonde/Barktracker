@@ -721,3 +721,4 @@ body.kiosk .beat { grid-template-rows: 1fr auto auto; }
 .form .alert input[type=time] { width: 7.5em; }
 .form .alert input[type=number] { width: 5em; }
 .alert-cond input[type=checkbox], .alert-top input[type=checkbox] { width: auto; } .form .alert label.check { white-space: nowrap; }
+.inline-edit { gap: 8px; } .inline-edit input[type=text] { font-size: 14px; border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 6px 8px; background: var(--panel); color: var(--ink); width: auto; min-width: 14em; } .home-edit { margin: 0 0 10px; } .home-edit label { display: inline-flex; align-items: center; gap: 6px; }
