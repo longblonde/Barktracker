@@ -1250,7 +1250,9 @@ def create_app(bark: BarkApp) -> FastAPI:
         async def gen():
             yield "retry: 2000\n\n"
             sent, last_send, peak = 0, 0.0, None
-            while not await request.is_disconnected() and (count <= 0 or sent < count):
+            server = getattr(request.app.state, "server", None)   # set by `run`: end on shutdown
+            while (not await request.is_disconnected() and not (server and server.should_exit)
+                   and (count <= 0 or sent < count)):
                 det = bark.detector
                 if det is not None:
                     peak = det.eq.copy() if peak is None else np.maximum(peak, det.eq)

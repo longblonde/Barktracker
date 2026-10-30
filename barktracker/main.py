@@ -40,7 +40,11 @@ def cmd_run(args, cfg):
     signal.signal(signal.SIGTERM, bye)
     logging.getLogger("barktracker").info("Dashboard on http://%s:%d", cfg.web.host, cfg.web.port)
     try:
-        uvicorn.run(app, host=cfg.web.host, port=cfg.web.port, log_level="warning")
+        # timeout: a browser that never lets go of a request can't hold up a restart
+        server = uvicorn.Server(uvicorn.Config(app, host=cfg.web.host, port=cfg.web.port, log_level="warning",
+                                               timeout_graceful_shutdown=3))
+        app.state.server = server     # lets the live stream end as soon as shutdown starts
+        server.run()
     finally:
         bark.shutdown()
 
