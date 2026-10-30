@@ -18,12 +18,16 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import alerts as AL
 from . import backup as BK
+from . import discover as DS
+from . import sysinfo as SI
+from . import themes as TH
 from . import features as F
 from . import ordinance as O
 from . import settings as S
@@ -130,6 +134,26 @@ def create_app(bark: BarkApp) -> FastAPI:
             return "mixed"
         return "manual" if reviewed else "auto"
 
+    DOUBT_PROB, DOUBT_MATCH = 0.6, 0.75
+
+    def review_tag(e: dict, marked: str, split: dict, match: dict) -> str:
+        """Manual (you decided), Auto (found and matched with confidence), or Unreviewed (nobody
+        has looked and something about it is uncertain)."""
+        if marked in ("manual", "mixed"):
+            return "manual"
+        if e["false_positive"]:
+            return "auto"
+        doubt = (e["max_prob"] or 0) < DOUBT_PROB or any(v < DOUBT_MATCH for v in match.values()) \
+            or ("u" in split and has_dogs())
+        return "unreviewed" if doubt else "auto"
+
+    _dogs_cache = {"t": 0.0, "v": False}
+
+    def has_dogs() -> bool:
+        if time.time() - _dogs_cache["t"] > 5:
+            _dogs_cache.update(t=time.time(), v=bool(store.q1("SELECT 1 FROM dogs LIMIT 1")))
+        return _dogs_cache["v"]
+
     def ep_view(e: dict, split: dict | None = None) -> dict:
         dogs = split if split is not None else {}
         return {
@@ -230,8 +254,10 @@ def create_app(bark: BarkApp) -> FastAPI:
                         (t0, t1))
         if sel is not None:
             barks = [b for b in barks if ("u" if b["dog_id"] is None else str(b["dog_id"])) in sel]
-        th = O.get_ordinance(store)["thresholds"]
-        incs = O.build_incidents([{**e, "subject_barks": e["bark_count"]} for e in eps], th, O.Clock(cfg.timezone))
+        ordn = O.get_ordinance(store)
+        th = ordn["thresholds"]
+        incs = O.build_incidents([{**e, "subject_barks": e["bark_count"]} for e in eps], th, O.Clock(cfg.timezone),
+                                 ordn["rules"])
         # quiet hours falling on this day, as timestamps (handles windows across midnight and DST)
         qs, qe = O._parse_hhmm(th["quiet_start"]), O._parse_hhmm(th["quiet_end"])
 
@@ -245,7 +271,7 @@ def create_app(bark: BarkApp) -> FastAPI:
             quiet = [[at(d, qs), at(d, qe)]]
         else:
             quiet = [[t0, at(d, qe)], [at(d, qs), t1]]
-        return {"date": d.isoformat(), "start_ts": t0, "end_ts": t1,
+        return {"date": d.isoformat(), "start_ts": t0, "end_ts": t1, "labels": O.rule_labels(ordn),
                 "quiet": quiet, "quiet_start": th["quiet_start"], "quiet_end": th["quiet_end"],
                 "incidents": [{"start_ts": i["start_ts"], "end_ts": i["end_ts"], "flags": i["flags"],
                                "duration": i["duration"]} for i in incs],
@@ -320,8 +346,11 @@ def create_app(bark: BarkApp) -> FastAPI:
     def episodes(limit: int = 50, offset: int = 0, dog: str | None = None,
                  unreviewed: bool = False, include_fp: bool = False, min_duration: float = 0.0,
                  date_from: str | None = None, date_to: str | None = None, kind: str = "barking",
-                 dogs: str | None = None, review: str | None = None):
+                 dogs: str | None = None, review: str | None = None, since: float | None = None):
         where, args = ["1=1"], []
+        if since:
+            where.append("e.start_ts > ?")
+            args.append(since)
         labelled_sql = "EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND b.label_dog_id IS NOT NULL)"
         if review == "todo":        # nobody has looked at it: not reviewed, no bark labelled
             where.append(f"e.reviewed=0 AND NOT {labelled_sql}")
@@ -381,12 +410,22 @@ def create_app(bark: BarkApp) -> FastAPI:
                 s[k] = r["n"]
                 if k != "u" and r["conf"] is not None and (r["lab"] or 0) < r["n"]:
                     match[k] = round(r["conf"], 2)        # how sure the automatic dog match was
-            out.append({**ep_view(e, s), "marked": marking(n, lab, bool(e["reviewed"])), "labelled": lab,
-                        "match": match})
+            mk = marking(n, lab, bool(e["reviewed"]))
+            out.append({**ep_view(e, s), "marked": mk, "labelled": lab, "match": match,
+                        "tag": review_tag(e, mk, s, match)})
         return {"total": total, "items": out}
 
+    @app.get("/api/clips/counts")
+    def clip_counts(since: float = 0.0):
+        """For the dashboard link: clips nobody has reviewed, and clips newer than your last look."""
+        todo = store.q1("SELECT COUNT(*) n FROM episodes e WHERE e.false_positive=0 AND e.reviewed=0 AND NOT EXISTS"
+                        " (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND b.label_dog_id IS NOT NULL)")["n"]
+        new = store.q1("SELECT COUNT(*) n FROM episodes WHERE false_positive=0 AND start_ts > ?", (since,))["n"]
+        total = store.q1("SELECT COUNT(*) n FROM episodes WHERE false_positive=0")["n"]
+        return {"to_review": todo, "new": new if since else 0, "total": total}
+
     @app.get("/api/episodes/{eid}")
-    def episode(eid: int):
+    def episode(eid: int, all_kinds: bool = False):
         e = get_ep(eid)
         barks = store.barks_for(eid)
         cs = e["clip_start_ts"] or e["start_ts"]
@@ -404,14 +443,23 @@ def create_app(bark: BarkApp) -> FastAPI:
             s[k] = s.get(k, 0) + 1
         # Earlier/Later stay within the same kind: barking clips, or "Not a bark" clips under review
         fp = 1 if e["false_positive"] else 0
-        prev = store.q1("SELECT id FROM episodes WHERE start_ts < ? AND false_positive=?"
-                        " ORDER BY start_ts DESC LIMIT 1", (e["start_ts"], fp))
-        nxt = store.q1("SELECT id FROM episodes WHERE start_ts > ? AND false_positive=?"
-                       " ORDER BY start_ts LIMIT 1", (e["start_ts"], fp))
-        pos = store.q1("SELECT SUM(start_ts >= ?) i, COUNT(*) n FROM episodes WHERE false_positive=?",
-                       (e["start_ts"], fp))
+        kind = "1=1" if all_kinds else f"false_positive={fp}"
+        prev = store.q1(f"SELECT id FROM episodes WHERE start_ts < ? AND {kind}"
+                        " ORDER BY start_ts DESC LIMIT 1", (e["start_ts"],))
+        nxt = store.q1(f"SELECT id FROM episodes WHERE start_ts > ? AND {kind}"
+                       " ORDER BY start_ts LIMIT 1", (e["start_ts"],))
+        pos = store.q1(f"SELECT SUM(start_ts >= ?) i, COUNT(*) n FROM episodes WHERE {kind}",
+                       (e["start_ts"],))
         lab = sum(1 for b in barks if b["label_dog_id"] is not None)
-        return {**ep_view(e, s), "marked": marking(len(barks), lab, bool(e["reviewed"])), "labelled": lab,
+        mk = marking(len(barks), lab, bool(e["reviewed"]))
+        match = {}
+        for b in barks:
+            if b["label_dog_id"] is None and b["pred_dog_id"] not in (None, NOT_BARK, -1) and b["pred_conf"] is not None:
+                k = str(b["pred_dog_id"])
+                match[k] = min(match.get(k, 1.0), b["pred_conf"])
+        bs = sorted(x["bearing"] for x in barks if x["bearing"] is not None)
+        return {**ep_view(e, s), "marked": mk, "labelled": lab, "tag": review_tag(e, mk, s, match),
+                "bearing": bs[len(bs) // 2] if bs else None, "bearings": len(bs),
                 "barks": barks, "sound": V.episode_sound(store, eid),
                 "position": {"index": pos["i"] or 0, "of": pos["n"] or 0},
                 "prev_id": prev["id"] if prev else None, "next_id": nxt["id"] if nxt else None}
@@ -524,11 +572,70 @@ def create_app(bark: BarkApp) -> FastAPI:
         voices = V.dog_profiles(store)
         from .array import dog_directions
         dirs = dog_directions(store)
+        rh = DS.rhythm(store)
         for d in rows:
             d.update(voices.get(d["id"], {}))
             d["direction"] = dirs.get(d["id"])
+            d["rhythm"] = rh.get(d["id"])
         nb = store.q1("SELECT COUNT(*) n FROM barks WHERE label_dog_id=0")["n"]
-        return {"dogs": rows, "not_bark_examples": nb, "min_labels": cfg.identify.min_labels_per_dog}
+        return {"dogs": rows, "not_bark_examples": nb, "min_labels": cfg.identify.min_labels_per_dog,
+                "direction_on": cfg.direction.enabled, "use_direction": cfg.identify.use_direction,
+                "unidentified": store.q1("SELECT COUNT(*) n FROM barks b JOIN episodes e ON e.id=b.episode_id"
+                                         " WHERE e.false_positive=0 AND b.label_dog_id IS NULL AND b.pred_dog_id IS NULL")["n"]}
+
+    _disc = {"t": 0.0, "v": None}
+
+    @app.get("/api/dogs/discovered")
+    def dogs_discovered(fresh: bool = False):
+        """Groups of unidentified barks that sound alike (and come from the same way): likely dogs
+        you haven't added yet. Cached for a minute; it reads a lot of barks."""
+        if fresh or _disc["v"] is None or time.time() - _disc["t"] > 60:
+            groups = DS.discovered(store, time.time(), cfg.direction.enabled)
+            _disc.update(t=time.time(), v=[{k: v for k, v in g.items() if k != "bark_ids"} | {"n_ids": len(g["bark_ids"])} for g in groups])
+            _disc["ids"] = {g["key"]: g["bark_ids"] for g in groups}
+        return {"groups": _disc["v"]}
+
+    @app.post("/api/dogs/discovered/{key}")
+    def adopt_discovered(key: str, body: dict = Body(...)):
+        """Name a discovered group: label the example barks you listened to (as a new dog, a dog you
+        already have, or not a dog), then re-match so its other barks follow."""
+        ids = [int(x) for x in body.get("bark_ids") or []]
+        if not ids:
+            raise HTTPException(400, "No barks to label")
+        dog_id = body.get("dog_id")
+        if body.get("new_name"):
+            try:
+                dog_id = store.add_dog(str(body["new_name"]).strip()[:40], None, "", "", "", "", "")["id"]
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(400, "There's already a dog with that name" if "UNIQUE" in str(e) else str(e))
+        _check_dog(dog_id)
+        if dog_id is None:
+            raise HTTPException(400, "Choose a dog")
+        store.label_barks(ids, int(dog_id))
+        for e in {r["episode_id"] for r in store.q(f"SELECT DISTINCT episode_id FROM barks WHERE id IN ({','.join('?' * len(ids))})", ids)}:
+            store.refresh_episode_flags(e)
+        _disc["v"] = None
+        return {"dog_id": dog_id, "identifier": bark.retrain()}
+
+    @app.get("/api/bearings")
+    def bearings(ds: str | None = Query(None, alias="date"), days: int = 1, dogs: str | None = None):
+        """Directions of logged barks over a day (or the days up to it), for the dashboard chart."""
+        sel = parse_sel(dogs)
+        d1 = date.fromisoformat(ds) if ds else today()
+        t0, t1 = day_start(d1 - timedelta(days=max(1, min(days, 90)) - 1)), day_start(d1 + timedelta(days=1))
+        rows = store.q(
+            "SELECT bd.bearing, NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) d FROM barks b"
+            " JOIN episodes e ON e.id=b.episode_id JOIN bark_dirs bd ON bd.ts BETWEEN b.ts - 0.3 AND b.ts + 0.3"
+            " WHERE b.ts >= ? AND b.ts < ? AND bd.valid=1 AND e.false_positive=0"
+            " AND COALESCE(b.label_dog_id, b.pred_dog_id, -1) != 0", (t0, t1))
+        out = []
+        for r in rows:
+            k = "u" if r["d"] is None else str(r["d"])
+            if sel is None or k in sel:
+                out.append([round(r["bearing"], 1), None if r["d"] is None else r["d"]])
+        return {"on": cfg.direction.enabled, "barks": out,
+                "total": store.q1("SELECT COUNT(*) n FROM barks b JOIN episodes e ON e.id=b.episode_id"
+                                  " WHERE b.ts >= ? AND b.ts < ? AND e.false_positive=0", (t0, t1))["n"]}
 
     @app.post("/api/dogs")
     def add_dog(body: DogIn):
@@ -588,6 +695,103 @@ def create_app(bark: BarkApp) -> FastAPI:
                          "media_dir": str(cfg.media_path), "model": bark.detector.classifier.name if bark.detector else None,
                          "audio_device": getattr(bark.source, "device_name", None)},
                 "build": build}
+
+    # ---- themes ---------------------------------------------------------------
+    @app.get("/theme.css")
+    def theme_css():
+        return Response(TH.css(TH.active(cfg, store)), media_type="text/css",
+                        headers={"Cache-Control": "no-cache"})
+
+    def themes_view():
+        act = TH.active(cfg, store)
+        return {"active": act["id"], "theme": act, "themes": TH.all_themes(cfg),
+                "color_keys": TH.COLOR_KEYS, "behaviors": {k: v[0] for k, v in TH.BEHAVIORS.items()}}
+
+    @app.get("/api/themes")
+    def get_themes():
+        return themes_view()
+
+    @app.put("/api/themes/active")
+    def use_theme(body: dict = Body(...)):
+        try:
+            TH.set_active(cfg, store, str(body.get("id") or ""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return themes_view()
+
+    @app.post("/api/themes")
+    def add_theme(body: dict = Body(...)):
+        """A new theme of yours (from the editor, a duplicate, or an uploaded file)."""
+        try:
+            t = TH.save(cfg, body)
+            if body.get("activate", True):
+                TH.set_active(cfg, store, t["id"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return themes_view()
+
+    @app.put("/api/themes/{tid}")
+    def edit_theme(tid: str, body: dict = Body(...)):
+        try:
+            TH.save(cfg, body, tid)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return themes_view()
+
+    @app.delete("/api/themes/{tid}")
+    def remove_theme(tid: str):
+        try:
+            TH.delete(cfg, store, tid)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return themes_view()
+
+    @app.get("/api/themes/{tid}.json")
+    def download_theme(tid: str):
+        t = TH.find(cfg, tid)
+        if not t:
+            raise HTTPException(404)
+        return JSONResponse(TH.export(t), headers={"Content-Disposition": f'attachment; filename="barktracker-theme-{tid}.json"'})
+
+    # ---- alerts to other apps ----------------------------------------------------
+    @app.get("/api/alerts")
+    def get_alerts():
+        return {"items": AL.load(store, cfg), "kinds": AL.KINDS, "when": AL.WHEN, "status": AL.status(store)}
+
+    @app.put("/api/alerts")
+    def put_alerts(body: dict = Body(...)):
+        try:
+            AL.save(store, body.get("items") or [])
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        return get_alerts()
+
+    @app.post("/api/alerts/test")
+    def test_alert(body: dict = Body(...)):
+        try:
+            AL.test(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"It didn't go through: {type(e).__name__}: {e}")
+        return {"ok": True}
+
+    # ---- system --------------------------------------------------------------------
+    @app.get("/api/system")
+    def system():
+        det = bark.detector.status() if bark.detector else None
+        return {"hardware": SI.info(cfg), "clock": clock_status(), "build": build,
+                "timezone": cfg.timezone or "system", "data_dir": str(cfg.data_path),
+                "audio_device": getattr(bark.source, "device_name", None),
+                "model": bark.detector.classifier.name if bark.detector else None,
+                "listening": det is not None, "error": bark.error,
+                "uptime_s": det["uptime_s"] if det else None,
+                "stats": det["stats"] if det else None,
+                "identifier": {"ready": bool(bark.identifier and bark.identifier.ready),
+                               "min_labels": cfg.identify.min_labels_per_dog},
+                "counts": store.q1("SELECT COUNT(*) episodes, COALESCE(SUM(bark_count),0) barks FROM episodes"
+                                   " WHERE false_positive=0"),
+                "direction": bark.array.status()}
 
     @app.put("/api/settings")
     def put_settings(body: dict = Body(...)):
@@ -802,8 +1006,9 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     # ---- EXPERIMENTAL: dual-microphone direction test ---------------------------------
     @app.get("/api/array/feed")
-    def array_feed(since: int = 0):
+    def array_feed(since: int = 0, scans_since: float = 0.0):
         arr = bark.array
+        arr.watch()                          # someone's looking: scan the input live for a few seconds
         evs = [dict(e) for e in list(arr.events) if e["n"] > since]
         # the dog each bark belongs to now (your labels, or the latest match), not just the live guess
         if evs:
@@ -814,6 +1019,7 @@ def create_app(bark: BarkApp) -> FastAPI:
                 if near is not None and abs(near["ts"] - e["ts"]) <= 0.3 and near["d"] not in (None, 0):
                     e["dog"] = near["d"]
         return {"status": arr.status(), "events": evs,
+                "scans": [x for x in list(arr.scans) if x[0] > scans_since],
                 "devices": None if since else _input_names()}
 
     def _input_names():
@@ -827,10 +1033,10 @@ def create_app(bark: BarkApp) -> FastAPI:
     @app.post("/api/array/calibrate")
     def array_calibrate(body: dict = Body(default={})):
         arr = bark.array
-        if not cfg.dev.array:
-            raise HTTPException(400, "Turn on the direction test first")
+        if not cfg.direction.enabled:
+            raise HTTPException(400, "Choose Stereo or Two microphones under Settings > Microphone first")
         if body.get("clear"):
-            bark.update_settings({"dev.array_offset_ms": 0})
+            bark.update_settings({"direction.offset_ms": 0})
             arr.calibrating = False
         else:
             arr.calibrating = True
@@ -938,7 +1144,8 @@ def create_app(bark: BarkApp) -> FastAPI:
     @app.get("/api/ordinance")
     def ordinance():
         o = O.get_ordinance(store)
-        return {"ordinance": o, "criteria": O.describe_thresholds(o["thresholds"]),
+        return {"ordinance": o, "criteria": {**O.describe_thresholds(o["thresholds"]), **O.describe_rules(o)},
+                "rule_types": O.RULE_TYPES, "labels": O.rule_labels(o),
                 "presets": [{"id": k, "label": v} for k, v in O.PRESET_LABELS.items()],
                 "reporter": O.get_reporter(store)}
 
@@ -991,26 +1198,104 @@ def create_app(bark: BarkApp) -> FastAPI:
         return Response(body.encode("utf-8-sig"), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
-    @app.get("/api/report/clips.zip")
-    def report_zip(dog: int | None = None, address: str | None = None,
-                   d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
-                   confirmed: bool = False, flagged: bool = False):
+    def _bark_rows(rep) -> str:
+        """Every bark in the report's incidents: when, which dog, how it was decided, direction."""
+        ids = [eid for i in rep["incidents"] for eid in i["episode_ids"]]
+        names = {d["id"]: d["name"] for d in store.dogs()}
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["Incident", "Clip", f"Time ({rep['timezone']})", "Seconds into clip", "Dog", "Identified",
+                    "Match confidence", "Bark confidence", "Loudness (dBFS)", "Direction (deg)"])
+        inc_of = {eid: i["number"] for i in rep["incidents"] for eid in i["episode_ids"]}
+        if ids:
+            rows = store.q("SELECT b.*, e.clip_start_ts, e.start_ts est, e.clip_path FROM barks b JOIN episodes e"
+                           f" ON e.id=b.episode_id WHERE b.episode_id IN ({','.join('?' * len(ids))}) ORDER BY b.ts", ids)
+            from .array import nearest_dirs
+            dirs = nearest_dirs(store, [r["ts"] for r in rows])
+            for r in rows:
+                d = r["label_dog_id"] if r["label_dog_id"] is not None else r["pred_dog_id"]
+                if d == NOT_BARK:
+                    continue
+                who = "Unknown dog" if d == -1 else names.get(d, "Unidentified") if d is not None else "Unidentified"
+                how = "Confirmed" if r["label_dog_id"] is not None else "Automatic" if r["pred_dog_id"] is not None else ""
+                dr = dirs.get(r["ts"])
+                w.writerow([inc_of.get(r["episode_id"], ""), Path(r["clip_path"]).name if r["clip_path"] else "",
+                            to_dt(r["ts"]).strftime("%Y-%m-%d %H:%M:%S"),
+                            round(r["ts"] - (r["clip_start_ts"] or r["est"]), 2), who, how,
+                            f"{round(r['pred_conf'] * 100)}%" if r["pred_conf"] is not None and r["label_dog_id"] is None else "",
+                            f"{round(r['prob'] * 100)}%", round(r["peak_db"]) if r["peak_db"] is not None else "",
+                            round(dr["bearing"]) if dr and dr["valid"] else ""])
+        return buf.getvalue()
+
+    @app.get("/api/report/barks.csv")
+    def report_barks(dog: int | None = None, address: str | None = None,
+                     d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
+                     confirmed: bool = False, flagged: bool = False):
         rep = _report(dog, address, d_from, d_to, confirmed, flagged)
+        return Response(_bark_rows(rep).encode("utf-8-sig"), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{_slug(rep)}-barks.csv"'})
+
+    def _ordinance_txt(rep) -> str:
+        o, rp = rep["ordinance"], rep["reporter"]
+        lines = [f"{o['code_section']}", o["jurisdiction"], "", o["rule_text"], ""]
+        if o.get("rule_note"):
+            lines += [o["rule_note"], ""]
+        lines += ["Rules used in this report:"] + [f"- {rep['flag_labels'].get(k, k)}: {v}" for k, v in rep["criteria"].items()]
+        if o.get("source_url"):
+            lines += ["", f"Source: {o['source_url']}"]
+        if o.get("contacts"):
+            lines += ["", "Where to report:"] + [f"- {c['name']}: {c['phone']}" for c in o["contacts"]]
+        if rp.get("name"):
+            lines += ["", "Prepared by: " + ", ".join(x for x in (rp["name"], rp["address"], rp["phone"], rp["email"]) if x)]
+        sm = rep["summary"]
+        lines += ["", f"Period: {rep['period']['from']} to {rep['period']['to']} ({rep['timezone']})",
+                  f"Incidents: {sm['incidents']}, total barking {O.fmt_dur(sm['total_seconds'])}, "
+                  f"{sm['days_with_barking']} of {sm['days_in_period']} days"]
+        return "\n".join(lines) + "\n"
+
+    def _zip(rep, what: str) -> Response:
+        """what: clips (incident clips + the incident and daily tables, as before), audio (just the
+        recordings), or all (recordings, every table, the rule text)."""
         slug = _slug(rep)
         buf = io.BytesIO()
         ids = [eid for i in rep["incidents"] for eid in i["episode_ids"]]
         paths = {r["id"]: r["clip_path"] for r in store.q(
             f"SELECT id, clip_path FROM episodes WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)}
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr(f"{slug}/incidents.csv", render_csv(rep, "incidents").encode("utf-8-sig"))
-            z.writestr(f"{slug}/daily.csv", render_csv(rep, "daily").encode("utf-8-sig"))
+            if what in ("clips", "all"):
+                z.writestr(f"{slug}/incidents.csv", render_csv(rep, "incidents").encode("utf-8-sig"))
+                z.writestr(f"{slug}/daily.csv", render_csv(rep, "daily").encode("utf-8-sig"))
+            if what == "all":
+                z.writestr(f"{slug}/barks.csv", _bark_rows(rep).encode("utf-8-sig"))
+                z.writestr(f"{slug}/ordinance-and-summary.txt", _ordinance_txt(rep))
+                z.writestr(f"{slug}/report.json", json.dumps(rep, indent=1, default=str))
             for inc in rep["incidents"]:
                 for eid in inc["episode_ids"]:
                     p = paths.get(eid)
                     if p and Path(p).exists():
-                        z.write(p, f"{slug}/clips/incident-{inc['number']:03d}_{Path(p).name}")
+                        z.write(p, f"{slug}/{'clips/' if what != 'audio' else ''}incident-{inc['number']:03d}_{Path(p).name}",
+                                compress_type=zipfile.ZIP_STORED)        # WAV barely compresses; don't make the Pi try
+        suffix = {"clips": "", "audio": "-audio", "all": "-everything"}[what]
         return Response(buf.getvalue(), media_type="application/zip",
-                        headers={"Content-Disposition": f'attachment; filename="{slug}.zip"'})
+                        headers={"Content-Disposition": f'attachment; filename="{slug}{suffix}.zip"'})
+
+    @app.get("/api/report/clips.zip")
+    def report_zip(dog: int | None = None, address: str | None = None,
+                   d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
+                   confirmed: bool = False, flagged: bool = False):
+        return _zip(_report(dog, address, d_from, d_to, confirmed, flagged), "clips")
+
+    @app.get("/api/report/audio.zip")
+    def report_audio(dog: int | None = None, address: str | None = None,
+                     d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
+                     confirmed: bool = False, flagged: bool = False):
+        return _zip(_report(dog, address, d_from, d_to, confirmed, flagged), "audio")
+
+    @app.get("/api/report/everything.zip")
+    def report_all(dog: int | None = None, address: str | None = None,
+                   d_from: str | None = Query(None, alias="from"), d_to: str | None = Query(None, alias="to"),
+                   confirmed: bool = False, flagged: bool = False):
+        return _zip(_report(dog, address, d_from, d_to, confirmed, flagged), "all")
 
     return app
 

@@ -176,12 +176,35 @@ def test_stream_speeds_up_while_barking(tmp_path):
     app.shutdown()
 
 
-def test_bark_words_setting(tmp_path):
+def test_themes(tmp_path):
     cfg, app, c = make(tmp_path)
-    assert c.get("/api/settings").json()["values"]["ui.bark_words"] is True
-    c.put("/api/settings", json={"values": {"ui.bark_words": False}})
-    assert cfg.ui.bark_words is False
-    assert c.get("/api/settings").json()["values"]["ui.bark_words"] is False
+    t = c.get("/api/themes").json()
+    assert t["active"] == "default" and {"default", "night-watch", "high-contrast"} <= {x["id"] for x in t["themes"]}
+    assert "--ink:#1d2833" in c.get("/theme.css").text
+    # built-in themes are read-only; a duplicate is yours to change, download, delete
+    assert c.put("/api/themes/default", json={"name": "x"}).status_code == 400
+    mine = {**c.get("/api/themes/default.json").json(), "name": "Porch light", "alert_color": "#ff8800"}
+    mine["colors"]["light"]["ink"] = "#102030"
+    t = c.post("/api/themes", json=mine).json()
+    assert t["active"] == "porch-light" and t["theme"]["alert_color"] == "#ff8800"
+    assert "--ink:#102030" in c.get("/theme.css").text and "--alert:#ff8800" in c.get("/theme.css").text
+    assert (tmp_path / "themes" / "porch-light.json").exists()           # a file: backed up, shareable
+    assert c.post("/api/themes", json={**mine, "alert_color": "orange"}).status_code == 400
+    assert c.post("/api/themes", json={**mine, "colors": {"light": {"ink": "#123456"}}}).json()["active"] == "porch-light-2"
+    assert c.delete("/api/themes/porch-light").status_code == 200
+    assert c.delete("/api/themes/default").status_code == 400
+    app.shutdown()
+
+
+def test_old_alert_color_becomes_a_theme(tmp_path):
+    from barktracker.storage import Store
+    st = Store(tmp_path / "barktracker.db")
+    st.set_meta("app_settings", {"ui.alert_color": "#00aaff", "ui.bark_words": False,
+                                 "dev.array": True, "dev.array_spacing_cm": 7.1})
+    cfg, app, c = make(tmp_path)
+    t = c.get("/api/themes").json()["theme"]
+    assert t["name"] == "My theme" and t["alert_color"] == "#00aaff" and t["behaviors"]["bark_words"] is False
+    assert cfg.direction.enabled is True and cfg.direction.spacing_cm == 7.1      # renamed settings carried over
     app.shutdown()
 
 

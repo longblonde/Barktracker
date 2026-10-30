@@ -24,23 +24,85 @@ THRESHOLDS = {
     "habitual_days": 3,          # this many qualifying days...
     "habitual_window_days": 7,   # ...within this many days marks a habitual pattern
 }
+GLOBAL_KEYS = ("quiet_start", "quiet_end", "max_pause_seconds")   # shared by every rule
+
+# Rule types you can add on the Report page. "scope" says what a rule flags: one incident, or a day.
+RULE_TYPES = {
+    "sustained": {"label": "Sustained", "scope": "incident", "params": {"minutes": 10},
+                  "help": "One stretch of barking lasting this long"},
+    "quiet_hours": {"label": "Quiet hours", "scope": "incident", "params": {"minutes": 5},
+                    "help": "This much barking during quiet hours"},
+    "intermittent": {"label": "Intermittent", "scope": "incident", "params": {"minutes": 30, "window_hours": 3},
+                     "help": "This much barking in total, on and off, within a time window"},
+    "frequent": {"label": "Frequent day", "scope": "day", "params": {"minutes": 30},
+                 "help": "This much barking in one day"},
+    "habitual": {"label": "Habitual pattern", "scope": "day", "params": {"days": 3, "window_days": 7},
+                 "help": "Days that meet any other rule, this many times within a window"},
+}
+# legacy threshold names <-> the default rule they belong to
+_LEGACY = {"sustained_minutes": ("sustained", "minutes"), "quiet_minutes": ("quiet_hours", "minutes"),
+           "daily_minutes": ("frequent", "minutes"), "habitual_days": ("habitual", "days"),
+           "habitual_window_days": ("habitual", "window_days")}
+
+
+def rules_from_thresholds(th: dict) -> list[dict]:
+    out = []
+    for rid in ("sustained", "quiet_hours", "frequent", "habitual"):
+        t = RULE_TYPES[rid]
+        params = dict(t["params"])
+        for legacy, (r, k) in _LEGACY.items():
+            if r == rid and legacy in th:
+                params[k] = th[legacy]
+        out.append({"id": rid, "type": rid, "label": t["label"], "enabled": True, "params": params})
+    return out
+
+
+def thresholds_from(rules: list[dict], base: dict) -> dict:
+    """The flat thresholds view (older API, dashboard quiet hours) of a rule list."""
+    th = {k: base.get(k, THRESHOLDS[k]) for k in THRESHOLDS}
+    for legacy, (rid, key) in _LEGACY.items():
+        r = next((x for x in rules if x["type"] == rid and x.get("enabled", True)), None)
+        if r is not None:
+            th[legacy] = r["params"].get(key, th[legacy])
+    return th
+
+
+def clean_rule(r: dict, taken: set[str]) -> dict:
+    typ = r.get("type")
+    if typ not in RULE_TYPES:
+        raise ValueError(f"Unknown rule type: {typ}")
+    t = RULE_TYPES[typ]
+    params = {}
+    for k, dflt in t["params"].items():
+        v = float((r.get("params") or {}).get(k, dflt))
+        if v < 0:
+            raise ValueError(f"{k} must be zero or more")
+        params[k] = int(v) if v.is_integer() else v
+    rid = str(r.get("id") or "").strip()
+    if not rid or rid in taken:
+        rid = typ if typ not in taken else next(f"{typ}_{n}" for n in range(2, 99) if f"{typ}_{n}" not in taken)
+    taken.add(rid)
+    label = str(r.get("label") or t["label"]).strip()[:60] or t["label"]
+    return {"id": rid, "type": typ, "label": label, "enabled": bool(r.get("enabled", True)), "params": params}
 
 PRESETS: dict[str, dict] = {
     # Placeholder wording for a new install: pick a city preset or enter your own.
     "example": {
         "preset": "example",
-        "jurisdiction": "City of Anytown (example)",
-        "code_section": "City Code § 0-0-0 (replace with your ordinance)",
+        "jurisdiction": "City of Anytown, USA (example)",
+        "code_section": "Anytown Municipal Code § 0-0-0, Animal Noise (replace with your ordinance)",
         "rule_text": ("No person may keep an animal that habitually or frequently barks, howls or makes other "
                       "noise that disturbs the peace and quiet of the neighborhood."),
-        "rule_note": ("Example wording. Choose your city under Preset, or enter your local code section, "
-                      "the rule in plain words, a link to the source and where to report."),
+        "rule_note": ("Example wording. Pick a city preset, or enter your local code section, the rule in "
+                      "plain words, a link to the source and where to report. Many cities phrase it as "
+                      "barking that is continuous for 10 minutes, or on and off for 30 minutes within "
+                      "3 hours; add rules below to match yours."),
         "source_url": "",
         "penalty": "See your city code.",
         "contacts": [
-            {"name": "Police non-emergency line (example)", "phone": "555-555-0100"},
-            {"name": "Animal control (example)", "phone": "555-555-0101"},
-            {"name": "City hall (example)", "phone": "555-555-0102"},
+            {"name": "Anytown Police non-emergency line (example)", "phone": "555-555-0100"},
+            {"name": "Anytown Animal Control (example)", "phone": "555-555-0101"},
+            {"name": "Anytown City Hall, code enforcement (example)", "phone": "555-555-0102"},
         ],
         "thresholds": dict(THRESHOLDS),
     },
@@ -71,21 +133,28 @@ DEFAULT_PRESET = "example"
 REPORTER_FIELDS = ("name", "address", "phone", "email")
 
 
+def _with_rules(o: dict) -> dict:
+    if not o.get("rules"):
+        o["rules"] = rules_from_thresholds(o["thresholds"])
+    o["thresholds"] = thresholds_from(o["rules"], o["thresholds"])
+    return o
+
+
 def default_ordinance() -> dict:
-    return copy.deepcopy(PRESETS[DEFAULT_PRESET])
+    return _with_rules(copy.deepcopy(PRESETS[DEFAULT_PRESET]))
 
 
 def get_ordinance(store: Store) -> dict:
     saved = store.get_meta("ordinance") or {}
-    base = default_ordinance()
+    base = copy.deepcopy(PRESETS[DEFAULT_PRESET])
     th = {**base["thresholds"], **(saved.get("thresholds") or {})}
     out = {**base, **saved, "thresholds": th}
-    return out
+    return _with_rules(out)
 
 
 def save_ordinance(store: Store, data: dict) -> dict:
     if data.get("reset"):
-        cur = copy.deepcopy(PRESETS[data.get("preset") or DEFAULT_PRESET])
+        cur = _with_rules(copy.deepcopy(PRESETS[data.get("preset") or DEFAULT_PRESET]))
         store.set_meta("ordinance", cur)
         return cur
     cur = get_ordinance(store)
@@ -93,6 +162,9 @@ def save_ordinance(store: Store, data: dict) -> dict:
                "penalty", "contacts"}
     for k in allowed & data.keys():
         cur[k] = data[k]
+    if "rules" in data:
+        taken: set[str] = set()
+        cur["rules"] = [clean_rule(r, taken) for r in data["rules"]]
     if "thresholds" in data:
         th = cur["thresholds"]
         for k, v in data["thresholds"].items():
@@ -101,11 +173,19 @@ def save_ordinance(store: Store, data: dict) -> dict:
             if k in ("quiet_start", "quiet_end"):
                 _parse_hhmm(v)   # validates
                 th[k] = v
-            else:
-                v = float(v)
-                if v < 0:
-                    raise ValueError(f"{k} must be zero or more")
-                th[k] = int(v) if float(v).is_integer() else v
+                continue
+            v = float(v)
+            if v < 0:
+                raise ValueError(f"{k} must be zero or more")
+            v = int(v) if float(v).is_integer() else v
+            th[k] = v
+            if k in _LEGACY:                     # the old names edit the matching default rule
+                rid, key = _LEGACY[k]
+                for r in cur["rules"]:
+                    if r["type"] == rid:
+                        r["params"][key] = v
+                        break
+    cur["thresholds"] = thresholds_from(cur["rules"], cur["thresholds"])
     store.set_meta("ordinance", cur)
     return cur
 
@@ -158,8 +238,9 @@ def quiet_overlap(start: float, end: float, th: dict, clock: Clock) -> float:
     return total
 
 
-def build_incidents(episodes: list[dict], th: dict, clock: Clock) -> list[dict]:
-    """Merge episodes separated by short pauses into incidents and flag them."""
+def build_incidents(episodes: list[dict], th: dict, clock: Clock, rules: list[dict] | None = None) -> list[dict]:
+    """Merge episodes separated by short pauses into incidents and flag them by the incident rules."""
+    rules = [r for r in (rules or rules_from_thresholds(th)) if r.get("enabled", True)]
     pause = float(th["max_pause_seconds"])
     out: list[dict] = []
     for e in sorted(episodes, key=lambda x: x["start_ts"]):
@@ -175,18 +256,29 @@ def build_incidents(episodes: list[dict], th: dict, clock: Clock) -> list[dict]:
         inc["barks"] = sum(e["bark_count"] for e in eps)
         inc["subject_barks"] = sum(e.get("subject_barks", e["bark_count"]) for e in eps)
         inc["quiet_seconds"] = quiet_overlap(inc["start_ts"], inc["end_ts"], th, clock)
-        flags = []
-        if inc["duration"] >= th["sustained_minutes"] * 60:
-            flags.append("sustained")
-        if inc["quiet_seconds"] > 0 and inc["quiet_seconds"] >= th["quiet_minutes"] * 60:
-            flags.append("quiet_hours")
-        inc["flags"] = flags
         inc["date"] = clock.dt(inc["start_ts"]).date().isoformat()
+    for inc in out:
+        flags = []
+        for r in rules:
+            p = r["params"]
+            if r["type"] == "sustained" and inc["duration"] >= p["minutes"] * 60:
+                flags.append(r["id"])
+            elif r["type"] == "quiet_hours" and inc["quiet_seconds"] > 0 and inc["quiet_seconds"] >= p["minutes"] * 60:
+                flags.append(r["id"])
+            elif r["type"] == "intermittent":
+                lo = inc["end_ts"] - p["window_hours"] * 3600
+                total = sum(min(o["end_ts"], inc["end_ts"]) - max(o["start_ts"], lo)
+                            for o in out if o["end_ts"] > lo and o["start_ts"] <= inc["end_ts"])
+                if total >= p["minutes"] * 60 and p["minutes"] > 0:
+                    flags.append(r["id"])
+        inc["flags"] = flags
     return out
 
 
-def flag_days(incidents: list[dict], th: dict, d0: date, d1: date) -> dict[str, dict]:
-    """Per-day totals plus 'frequent' and 'habitual' flags."""
+def flag_days(incidents: list[dict], th: dict, d0: date, d1: date,
+              rules: list[dict] | None = None) -> dict[str, dict]:
+    """Per-day totals plus the day rules' flags (frequent days, habitual patterns)."""
+    rules = [r for r in (rules or rules_from_thresholds(th)) if r.get("enabled", True)]
     days: dict[str, dict] = {}
     d = d0
     while d <= d1:
@@ -204,20 +296,27 @@ def flag_days(incidents: list[dict], th: dict, d0: date, d1: date) -> dict[str, 
         if inc["flags"]:
             day["flagged_incidents"] += 1
     for day in days.values():
-        if day["seconds"] >= th["daily_minutes"] * 60 and day["seconds"] > 0:
-            day["flags"].append("frequent")
+        for r in rules:
+            if r["type"] == "frequent" and day["seconds"] > 0 and day["seconds"] >= r["params"]["minutes"] * 60:
+                day["flags"].append(r["id"])
         day["qualifying"] = bool(day["flags"] or day["flagged_incidents"])
     keys = sorted(days)
-    win, need = int(th["habitual_window_days"]), int(th["habitual_days"])
-    for i, k in enumerate(keys):
-        if not days[k]["qualifying"] or need <= 0:
+    for r in rules:
+        if r["type"] != "habitual":
             continue
-        # habitual if any window containing this day has >= need qualifying days
-        for s in range(max(0, i - win + 1), i + 1):
-            window = keys[s:s + win]
-            if sum(days[w]["qualifying"] for w in window) >= need:
-                days[k]["flags"].append("habitual")
-                break
+        win, need = int(r["params"]["window_days"]), int(r["params"]["days"])
+        hits = []
+        for i, k in enumerate(keys):
+            if not days[k]["qualifying"] or need <= 0:
+                continue
+            # habitual if any window containing this day has >= need qualifying days
+            for s in range(max(0, i - win + 1), i + 1):
+                window = keys[s:s + win]
+                if sum(days[w]["qualifying"] for w in window) >= need:
+                    hits.append(k)
+                    break
+        for k in hits:
+            days[k]["flags"].append(r["id"])
     return days
 
 
@@ -227,6 +326,25 @@ FLAG_LABELS = {
     "frequent": "Frequent day",
     "habitual": "Habitual pattern",
 }
+
+
+def describe_rule(r: dict, th: dict) -> str:
+    p = r["params"]
+    return {
+        "sustained": lambda: f"barking lasting {p['minutes']} min or more, with no break longer than {th['max_pause_seconds']} s",
+        "quiet_hours": lambda: f"at least {p['minutes']} min of barking between {_fmt12(th['quiet_start'])} and {_fmt12(th['quiet_end'])}",
+        "intermittent": lambda: f"{p['minutes']} min or more of barking, on and off, within {p['window_hours']} hours",
+        "frequent": lambda: f"{p['minutes']} min or more of barking in one day",
+        "habitual": lambda: f"{p['days']} or more days meeting a rule within {p['window_days']} days",
+    }[r["type"]]()
+
+
+def describe_rules(o: dict) -> dict[str, str]:
+    return {r["id"]: describe_rule(r, o["thresholds"]) for r in o["rules"] if r.get("enabled", True)}
+
+
+def rule_labels(o: dict) -> dict[str, str]:
+    return {**FLAG_LABELS, **{r["id"]: r["label"] for r in o["rules"]}}
 
 
 def describe_thresholds(th: dict) -> dict[str, str]:
@@ -316,8 +434,11 @@ def build_report(store: Store, tz: str | None, d0: date, d1: date, dog_id: int |
                           for k, v in info["dogs"].most_common()}
         selected.append(e)
 
-    incidents = build_incidents(selected, th, clock)
-    days = flag_days(incidents, th, d0, d1)
+    rules = [r for r in ordn["rules"] if r.get("enabled", True)]
+    inc_rules = [r["id"] for r in rules if RULE_TYPES[r["type"]]["scope"] == "incident"]
+    day_rules = [r["id"] for r in rules if RULE_TYPES[r["type"]]["scope"] == "day"]
+    incidents = build_incidents(selected, th, clock, rules)
+    days = flag_days(incidents, th, d0, d1, rules)
     for inc in incidents:
         inc["day_flags"] = list(days.get(inc["date"], {}).get("flags", []))
     if flagged_only:   # incidents that themselves meet a criterion (sustained / quiet hours)
@@ -334,9 +455,9 @@ def build_report(store: Store, tz: str | None, d0: date, d1: date, dog_id: int |
         "incidents": len(incidents),
         "total_seconds": sum(i["duration"] for i in incidents),
         "barks": sum(i["subject_barks"] for i in incidents),
-        "flag_counts": {f: sum(1 for i in incidents if f in i["flags"]) for f in ("sustained", "quiet_hours")},
+        "flag_counts": {f: sum(1 for i in incidents if f in i["flags"]) for f in inc_rules},
         "flagged_incidents": sum(1 for i in incidents if i["flags"]),
-        "days_flagged": {f: sum(1 for d in day_list if f in d["flags"]) for f in ("frequent", "habitual")},
+        "days_flagged": {f: sum(1 for d in day_list if f in d["flags"]) for f in day_rules},
         "quiet_incidents": sum(1 for i in incidents if i["quiet_seconds"] > 0),
         "longest": {"start_ts": longest["start_ts"], "duration": longest["duration"]} if longest else None,
     }
@@ -345,7 +466,8 @@ def build_report(store: Store, tz: str | None, d0: date, d1: date, dog_id: int |
         "timezone": clock.tzname(),
         "period": {"from": d0.isoformat(), "to": d1.isoformat()},
         "subject": subject, "confirmed_only": confirmed_only, "flagged_only": flagged_only,
-        "ordinance": ordn, "criteria": describe_thresholds(th), "flag_labels": FLAG_LABELS,
+        "ordinance": ordn, "criteria": describe_rules(ordn), "flag_labels": rule_labels(ordn),
+        "rule_scopes": {r["id"]: RULE_TYPES[r["type"]]["scope"] for r in rules},
         "reporter": get_reporter(store),
         "summary": summary, "days": day_list,
         "incidents": [_incident_out(i, clock) for i in incidents],
@@ -382,3 +504,17 @@ def fmt_dur(s: float) -> str:
     h, rem = divmod(s, 3600)
     m, sec = divmod(rem, 60)
     return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def episode_flags(store: Store, tz: str | None, start_ts: float, end_ts: float) -> dict:
+    """For alerts: does the barking that just ended meet a rule, and did it touch quiet hours?"""
+    clock = Clock(tz)
+    o = get_ordinance(store)
+    th, rules = o["thresholds"], [r for r in o["rules"] if r.get("enabled", True)]
+    look = max([r["params"].get("window_hours", 0) * 3600 for r in rules] + [3600])
+    eps = [dict(e, subject_barks=e["bark_count"]) for e in store.episodes_between(end_ts - look, end_ts + 1)
+           if not e["false_positive"]]
+    incs = build_incidents(eps, th, clock, rules)
+    mine = next((i for i in incs if i["start_ts"] <= start_ts <= i["end_ts"] + 1), None)
+    return {"flags": mine["flags"] if mine else [],
+            "quiet": quiet_overlap(start_ts, max(end_ts, start_ts + 0.5), th, clock) > 0}

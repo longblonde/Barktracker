@@ -7,7 +7,6 @@ import os
 import queue
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
 from .classifier import make_classifier
@@ -35,6 +34,8 @@ class BarkApp:
         self.backup = backup_mod.Backup(cfg, self.store, getattr(cfg, "source_file", None))
         from . import tuning
         tuning.ensure_schema(self.store)
+        from .array import ensure_schema as array_schema
+        array_schema(self.store)
         self._tune_clf = None
         self._tune_lock = threading.Lock()
         self.restart_pending = False
@@ -42,19 +43,17 @@ class BarkApp:
         ic = cfg.identify
         self.identifier = DogIdentifier(ic.k, ic.min_labels_per_dog, ic.min_confidence) if ic.enabled else None
         if self.identifier:
-            retrain_and_repredict(self.store, self.identifier)
+            retrain_and_repredict(self.store, self.identifier, self._use_direction())
         self.source = source
         if source is not None and hasattr(source, "switch"):      # mic choice / boost saved from the dashboard
             source.device = cfg.audio.device
             source.gain = 10 ** (cfg.audio.gain_db / 20)
         from .array import ArrayMonitor          # experimental direction test (off unless enabled)
         self.array = ArrayMonitor(cfg, self)
-        from .array import ensure_schema as array_schema
-        array_schema(self.store)
         if source is not None and hasattr(source, "tap"):
             source.tap = self.array.on_tap
         if source is not None and hasattr(source, "prefer_native"):
-            source.prefer_native = bool(cfg.dev.array)     # finer timing for the direction estimate
+            source.prefer_native = bool(cfg.direction.enabled)     # finer timing for the direction estimate
         self.detector: BarkDetector | None = None
         self.stop = threading.Event()
         self.error: str | None = None
@@ -239,6 +238,11 @@ class BarkApp:
                                   self.cfg.clips.max_disk_mb)
             except Exception:  # noqa: BLE001
                 log.exception("Retention failed")
+            if self._use_direction():           # directions arrive after the live guess: re-match hourly
+                try:
+                    self.retrain()
+                except Exception:  # noqa: BLE001
+                    log.exception("Re-matching failed")
             self.stop.wait(3600)
 
     def _backup_loop(self):
@@ -284,10 +288,10 @@ class BarkApp:
         self._settings_side_effects(list(settings_mod.SPECS))
 
     def _settings_side_effects(self, changed: list[str]) -> None:
-        if any(k.startswith("dev.array") for k in changed):
+        if any(k.startswith("direction.") for k in changed):
             self.array.reconfigure()
-            if "dev.array" in changed and hasattr(self.source, "prefer_native"):
-                self.source.prefer_native = bool(self.cfg.dev.array)
+            if "direction.enabled" in changed and hasattr(self.source, "prefer_native"):
+                self.source.prefer_native = bool(self.cfg.direction.enabled)
                 self.source.switch(self.source.device)      # reopen at the device's own rate
         if "audio.device" in changed and hasattr(self.source, "switch"):
             self.source.switch(self.cfg.audio.device)
@@ -305,7 +309,10 @@ class BarkApp:
     def retrain(self) -> dict:
         if not self.identifier:
             return {"trained": False, "reason": "identification disabled"}
-        return retrain_and_repredict(self.store, self.identifier)
+        return retrain_and_repredict(self.store, self.identifier, self._use_direction())
+
+    def _use_direction(self) -> bool:
+        return bool(self.cfg.identify.use_direction and self.cfg.direction.enabled)
 
     def recover(self) -> None:
         """Fix up episodes left open by a crash/power cut (and their unfinalised WAV headers)."""
@@ -323,23 +330,16 @@ class BarkApp:
             log.info("Recovered unfinished episode %d", r["id"])
 
     def notify(self, ep: dict) -> None:
-        n = self.cfg.notify
-        if not n.webhook_url or ep["duration"] < n.min_duration:
-            return
-        names = {str(d["id"]): d["name"] for d in self.store.dogs()}
-        dogs = {names.get(k, "unknown"): v for k, v in ep["dogs"].items() if k != "0"}
-        payload = {**ep, "dogs": dogs,
-                   "message": f"Barking for {ep['duration']:.0f}s ({ep['barks']} barks)"
-                              + (f": {', '.join(dogs)}" if dogs else "")}
-
-        def send():
-            try:
-                req = urllib.request.Request(n.webhook_url, data=json.dumps(payload).encode(),
-                                             headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=10).read()
-            except Exception as e:  # noqa: BLE001
-                log.warning("Webhook failed: %s", e)
-        threading.Thread(target=send, daemon=True).start()
+        """Send the finished episode to the alert destinations whose conditions it meets."""
+        from . import alerts
+        from . import ordinance as O
+        try:
+            if not any(i.get("enabled", True) for i in alerts.load(self.store, self.cfg)):
+                return
+            ctx = O.episode_flags(self.store, self.cfg.timezone, ep["start_ts"], ep["end_ts"])
+            alerts.dispatch(self.store, self.cfg, ep, ctx)
+        except Exception:  # noqa: BLE001
+            log.exception("Alerts failed")
 
     def shutdown(self):
         self.stop.set()
