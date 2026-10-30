@@ -241,9 +241,11 @@ class ArrayMonitor:
             t.start()
             self._threads.append(t)
 
-    def stop(self) -> None:
+    def stop(self, wait: float = 0.0) -> None:
         self._stop.set()
         self._b_restart.set()
+        for t in self._threads:          # wait: let the second mic's stream close before exit
+            t.join(wait)
 
     def reconfigure(self) -> None:
         """Settings changed: reopen the second mic and start the estimates afresh."""

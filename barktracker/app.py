@@ -361,8 +361,15 @@ class BarkApp:
 
     def shutdown(self):
         self.stop.set()
-        self.array.stop()
-        if self.detector:
+        if hasattr(self.source, "close"):
+            self.source.close()
+        # Mic streams must be closed before Python exits (see MicSource.close); each loop wakes
+        # within 0.5 s. The detector thread flushes its open episode itself as it finishes.
+        self.array.stop(wait=3)
+        det_thread = next((t for t in self.threads if t.name == "detector"), None)
+        if det_thread is not None:
+            det_thread.join(3)
+        if self.detector and (det_thread is None or det_thread.is_alive()):
             try:
                 self.detector.flush()
             except Exception:  # noqa: BLE001

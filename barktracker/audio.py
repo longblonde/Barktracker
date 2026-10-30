@@ -91,6 +91,7 @@ class MicSource:
         self.device_name = None
         self._restart = threading.Event()
         self._rescan = False
+        self._closed = False
         self.tap = None              # optional fn(frames x channels, ts, rate) before mono mixing
         self.prefer_native = False   # open at the device's own rate (finer timing for the direction test)
 
@@ -98,6 +99,12 @@ class MicSource:
         """Move to another input: the open stream closes and reopens on `device` within ~0.5 s."""
         self.device = device or "auto"
         self._rescan = True          # re-read the device list so a newly plugged-in mic is found
+        self._restart.set()
+
+    def close(self) -> None:
+        """Shutdown: end the stream loop so the stream is closed before Python exits. Left open,
+        sounddevice's exit hook (Pa_Terminate) can deadlock with the audio callback thread."""
+        self._closed = True
         self._restart.set()
 
     # Names USB webcams/mics show up as in ALSA, best first (Logitech C920/C922/C930e/Brio, etc.)
@@ -126,6 +133,8 @@ class MicSource:
 
     def __iter__(self) -> Iterator[tuple[np.ndarray, float]]:
         import sounddevice as sd
+        if self._closed:
+            return
 
         def cb(indata, frames, t, status):
             if status:
@@ -177,7 +186,7 @@ class MicSource:
                 yield x.astype(np.float32), ts
         while not self.q.empty():        # switching inputs: drop audio from the old one
             self.q.get_nowait()
-        log.info("Input stream closed (switching microphone)")
+        log.info("Input stream closed (%s)", "shutting down" if self._closed else "switching microphone")
 
 
 class FileSource:
