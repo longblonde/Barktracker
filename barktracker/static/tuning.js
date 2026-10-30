@@ -382,9 +382,31 @@ function makePolar(canvas) {
       const cx = W / 2, cy = H - 26, R = Math.max(40, Math.min(W / 2 - 46, H - 52)), r0 = R * 0.2;
       const S_ = POLAR.SEGS, gap = Math.max(2, R / 70), segH = (R - r0 - gap * (S_ - 1)) / S_;
       const pad = Math.min(2.2, wedge * 0.12);          // degrees of gap between wedges
-      const arc = (a0, a1, ri, ro) => {                // an annular sector; 0 deg = left (mic A)
+      const cr = Math.min(2.5, segH / 3, (r0 * (wedge - pad) * Math.PI) / 720);   // corners like the live EQ's cells
+      const at = (rho, t) => [cx + Math.cos(t) * rho, cy + Math.sin(t) * rho];
+      const turn = ([x, y], a, b) => {                 // a corner: the short way round a circle of radius cr
+        let d = b - a;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d <= -Math.PI) d += 2 * Math.PI;
+        g.arc(x, y, cr, a, a + d, d < 0);
+      };
+      const toward = ([x, y], [px, py]) => Math.atan2(py - y, px - x);
+      const arc = (a0, a1, ri, ro) => {                // an annular sector with rounded corners; 0 deg = left (mic A)
         const t0 = Math.PI + (a0 * Math.PI) / 180, t1 = Math.PI + (a1 * Math.PI) / 180;
-        g.beginPath(); g.arc(cx, cy, ro, t0, t1); g.arc(cx, cy, ri, t1, t0, true); g.closePath(); g.fill();
+        g.beginPath();
+        if (cr < 0.5) { g.arc(cx, cy, ro, t0, t1); g.arc(cx, cy, ri, t1, t0, true); }
+        else {
+          // each corner circle touches a straight side and a curved edge; po/pi: its centre's radius
+          const po = ro - cr, pi = ri + cr, so = Math.asin(cr / po), si = Math.asin(cr / pi);
+          const eo = Math.sqrt(po * po - cr * cr), ei = Math.sqrt(pi * pi - cr * cr);   // where it meets the side
+          const c00 = at(pi, t0 + si), c01 = at(po, t0 + so), c11 = at(po, t1 - so), c10 = at(pi, t1 - si);
+          g.moveTo(...at(ei, t0));
+          g.lineTo(...at(eo, t0)); turn(c01, toward(c01, at(eo, t0)), t0 + so);
+          g.arc(cx, cy, ro, t0 + so, t1 - so); turn(c11, t1 - so, toward(c11, at(eo, t1)));
+          g.lineTo(...at(ei, t1)); turn(c10, toward(c10, at(ei, t1)), t1 - si + Math.PI);
+          g.arc(cx, cy, ri, t1 - si, t0 + si, true); turn(c00, t0 + si + Math.PI, toward(c00, at(ei, t0)));
+        }
+        g.closePath(); g.fill();
       };
       bars.forEach((b, i) => {
         if (calm()) { b.peak = Math.max(b.h, b.peak - 0.6 * dt); }
