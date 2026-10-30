@@ -17,6 +17,17 @@ def _setup_logging(verbose: bool):
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
+SHUTDOWN_WATCHDOG = 15   # seconds after SIGTERM before we dump every thread's stack and exit
+
+
+def _arm_shutdown_watchdog() -> None:
+    """Some restarts hang at exit (seen only with the real mic). If we're still here after
+    SHUTDOWN_WATCHDOG seconds, write all thread stacks to stderr (the journal) and exit, so the
+    hang shows where it is instead of systemd killing us silently after 90 s."""
+    import faulthandler
+    faulthandler.dump_traceback_later(SHUTDOWN_WATCHDOG, exit=True)
+
+
 def cmd_run(args, cfg):
     import uvicorn
 
@@ -35,14 +46,20 @@ def cmd_run(args, cfg):
     app = create_app(bark)
 
     def bye(*_):
+        _arm_shutdown_watchdog()
         bark.shutdown()
         sys.exit(0)
     signal.signal(signal.SIGTERM, bye)
     logging.getLogger("barktracker").info("Dashboard on http://%s:%d", cfg.web.host, cfg.web.port)
     try:
         # timeout: a browser that never lets go of a request can't hold up a restart
-        server = uvicorn.Server(uvicorn.Config(app, host=cfg.web.host, port=cfg.web.port, log_level="warning",
-                                               timeout_graceful_shutdown=3))
+        class Server(uvicorn.Server):
+            def handle_exit(self, sig, frame):   # uvicorn holds SIGTERM while serving, so arm here
+                _arm_shutdown_watchdog()
+                super().handle_exit(sig, frame)
+
+        server = Server(uvicorn.Config(app, host=cfg.web.host, port=cfg.web.port, log_level="warning",
+                                       timeout_graceful_shutdown=3))
         app.state.server = server     # lets the live stream end as soon as shutdown starts
         server.run()
     finally:
