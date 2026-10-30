@@ -12,7 +12,7 @@ const ARR_KIND = {
 async function renderArray() {
   clearTimeout(S.arrTimer);
   let st;
-  try { st = await api("/api/settings"); } catch (e) { view.innerHTML = `<div class="notice err">${esc(e.message)}</div>`; return; }
+  try { [st] = await Promise.all([api("/api/settings"), loadDogs()]); } catch (e) { view.innerHTML = `<div class="notice err">${esc(e.message)}</div>`; return; }
   if (route.name !== "array") return;
   const v = st.values;
   if (!v["dev.array"]) {
@@ -30,7 +30,10 @@ async function renderArray() {
     <section class="panel arr-polar-panel">
       <div class="row spread"><h2>Bearing</h2><span class="row"><span class="small muted" id="arrStatus"></span><button type="button" class="btn" id="arrReset">Clear chart</button></span></div>
       <canvas id="arrPolar" class="arr-polar" aria-label="Estimated direction of recent sounds, 0 to 180 degrees"></canvas>
-      <div class="legend">${Object.values(ARR_KIND).map(([t, c]) => `<span style="--c:${c}">${t}</span>`).join("")}<span class="nodot"><i class="arr-hist-key"></i><span id="arrHistKey">Barks so far (spread)</span></span></div>
+      <div class="row" style="gap:6px;margin:2px 0 4px"><span class="small muted">Color by</span>
+        <span class="seg arr-seg" role="radiogroup"><button type="button" role="radio" data-colorby="kind" aria-checked="${S.arrColorBy !== "dog"}">Decision</button><button type="button" role="radio" data-colorby="dog" aria-checked="${S.arrColorBy === "dog"}">Dog</button></span></div>
+      <div class="legend" id="arrLegend"></div>
+
       <p class="small muted" style="margin:6px 0 0">0° points at mic A, 180° at mic B, 90° is straight ahead (or straight behind: two mics can't tell front from back). Newest sounds sit on the outer ring. A kennel that doesn't move should land in the same place every time.</p>
     </section>
     <section class="panel tl-panel">
@@ -51,8 +54,8 @@ async function renderArray() {
           </fieldset>
           <label>Second microphone (pair)
             <select name="dev.array_device"><option value="">Choose…</option>${devs.map((d) => `<option ${d === v["dev.array_device"] ? "selected" : ""}>${esc(d)}</option>`).join("")}${v["dev.array_device"] && !devs.includes(v["dev.array_device"]) ? `<option selected>${esc(v["dev.array_device"])}</option>` : ""}</select></label>
-          <label>Distance between the microphones<span class="unit"><input type="number" name="dev.array_spacing_cm" value="${v["dev.array_spacing_cm"]}" min="0.5" max="2000" step="0.5">cm</span>
-            <span class="help">Measure it. For the webcam, the distance between its two mic holes.</span></label>
+          <label>Distance between the microphones<span class="unit"><input type="number" name="dev.array_spacing_cm" value="${v["dev.array_spacing_cm"]}" min="0.5" max="2000" step="0.1">cm</span>
+            <span class="help">Measure it. For the webcam, the distance between its two mic holes. <button type="button" class="linkish" id="arrAiy">AIY Voice HAT: 7.1 cm</button></span></label>
           <label class="check"><input type="checkbox" name="dev.array_swap" ${v["dev.array_swap"] ? "checked" : ""}> Mic A is on the other side (mirror the chart)</label>
           <div class="row"><button class="btn primary" type="submit">Save</button></div>
         </form>
@@ -162,13 +165,14 @@ async function renderArray() {
     g.textAlign = "center"; g.fillText("ahead", cx, cy + 18);
     g.beginPath(); g.fillStyle = ink; g.arc(cx, cy, 3, 0, 2 * Math.PI); g.fill();
     // recent points: newest on the outer ring
-    const recent = events.filter((e) => e.valid).slice(-ARR.keep);
+    const byDog = S.arrColorBy === "dog";
+    const recent = events.filter((e) => e.valid && (!byDog || e.kind === "bark")).slice(-ARR.keep);
     recent.forEach((e, i) => {
       const age = recent.length - 1 - i, r = R * (1 - (age / ARR.keep) * 0.72);
-      const [x, y] = pt(e.angle, r), col = (ARR_KIND[e.kind] || ARR_KIND.quiet)[1];
+      const [x, y] = pt(e.angle, r), col = colorOf(e);
       g.globalAlpha = Math.max(0.25, 1 - age / ARR.keep);
       g.beginPath(); g.arc(x, y, e.n === sel ? 12 : 10, 0, 2 * Math.PI);
-      g.fillStyle = css.getPropertyValue(col.slice(4, -1)) || col; g.fill();
+      g.fillStyle = col.startsWith("var(") ? css.getPropertyValue(col.slice(4, -1)) : col; g.fill();
       if (e.n === sel) { g.lineWidth = 2; g.strokeStyle = ink; g.stroke(); g.lineWidth = 1; }
       g.fillStyle = "#fff"; g.font = `600 10px ${css.fontFamily}`; g.textAlign = "center";
       g.fillText(String(e.n), x, y + 3.5);
@@ -176,6 +180,32 @@ async function renderArray() {
     });
     g.globalAlpha = 1;
   }
+
+  // color by the detector's decision, or by the dog it matched (barks only)
+  function colorOf(e) {
+    if (S.arrColorBy === "dog") return e.dog != null ? dogColor(String(e.dog)) : UNKNOWN;
+    return (ARR_KIND[e.kind] || ARR_KIND.quiet)[1];
+  }
+  function drawLegend() {
+    const el = $("#arrLegend"); if (!el) return;
+    el.innerHTML = S.arrColorBy === "dog"
+      ? Object.values(S.dogs).map((d) => `<span style="--c:${d.color}">${esc(d.name)}</span>`).join("") + `<span style="--c:${UNKNOWN}">Unidentified</span><span class="nodot"><i class="arr-hist-key"></i><span id="arrHistKey"></span></span>`
+      : Object.values(ARR_KIND).map(([t, c]) => `<span style="--c:${c}">${t}</span>`).join("") + `<span class="nodot"><i class="arr-hist-key"></i><span id="arrHistKey"></span></span>`;
+  }
+  view.querySelectorAll("[data-colorby]").forEach((b) => b.onclick = async () => {
+    S.arrColorBy = b.dataset.colorby;
+    view.querySelectorAll("[data-colorby]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+    if (S.arrColorBy === "dog") {               // pick up labels given since these sounds arrived
+      try {
+        const all = await api("/api/array/feed?since=0"), byN = new Map(all.events.map((e) => [e.n, e.dog]));
+        for (const e of events) if (byN.has(e.n)) e.dog = byN.get(e.n);
+      } catch (_) { /* keep what we have */ }
+    }
+    drawLegend(); drawPolar();
+  });
+  drawLegend();
+  const aiy = $("#arrAiy");
+  if (aiy) aiy.onclick = () => { form.elements["dev.array_spacing_cm"].value = 7.1; form.querySelector('[name="dev.array_mode"][value="stereo"]').checked = true; toast("Set for the AIY Voice HAT; press Save"); };
 
   function xOf(idx, W) { return W - ((live.last - idx) / ARR.FRAME) * (W / ARR.N); }
   function drawLane() {

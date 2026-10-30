@@ -49,8 +49,12 @@ class BarkApp:
             source.gain = 10 ** (cfg.audio.gain_db / 20)
         from .array import ArrayMonitor          # experimental direction test (off unless enabled)
         self.array = ArrayMonitor(cfg, self)
+        from .array import ensure_schema as array_schema
+        array_schema(self.store)
         if source is not None and hasattr(source, "tap"):
             source.tap = self.array.on_tap
+        if source is not None and hasattr(source, "prefer_native"):
+            source.prefer_native = bool(cfg.dev.array)     # finer timing for the direction estimate
         self.detector: BarkDetector | None = None
         self.stop = threading.Event()
         self.error: str | None = None
@@ -282,6 +286,9 @@ class BarkApp:
     def _settings_side_effects(self, changed: list[str]) -> None:
         if any(k.startswith("dev.array") for k in changed):
             self.array.reconfigure()
+            if "dev.array" in changed and hasattr(self.source, "prefer_native"):
+                self.source.prefer_native = bool(self.cfg.dev.array)
+                self.source.switch(self.source.device)      # reopen at the device's own rate
         if "audio.device" in changed and hasattr(self.source, "switch"):
             self.source.switch(self.cfg.audio.device)
         if "audio.gain_db" in changed and hasattr(self.source, "gain"):

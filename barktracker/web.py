@@ -390,8 +390,12 @@ def create_app(bark: BarkApp) -> FastAPI:
         e = get_ep(eid)
         barks = store.barks_for(eid)
         cs = e["clip_start_ts"] or e["start_ts"]
+        from .array import nearest_dirs
+        dirs = nearest_dirs(store, [b["ts"] for b in barks])
         for b in barks:
             b["offset"] = round(b["ts"] - cs, 3)
+            dr = dirs.get(b["ts"])
+            b["bearing"] = dr["bearing"] if dr and dr["valid"] else None
         s = {}
         for b in barks:
             if b["dog_id"] == NOT_BARK:
@@ -518,8 +522,11 @@ def create_app(bark: BarkApp) -> FastAPI:
             d["predicted_barks"] = store.q1("SELECT COUNT(*) n FROM barks WHERE label_dog_id IS NULL"
                                             " AND pred_dog_id=?", (d["id"],))["n"]
         voices = V.dog_profiles(store)
+        from .array import dog_directions
+        dirs = dog_directions(store)
         for d in rows:
             d.update(voices.get(d["id"], {}))
+            d["direction"] = dirs.get(d["id"])
         nb = store.q1("SELECT COUNT(*) n FROM barks WHERE label_dog_id=0")["n"]
         return {"dogs": rows, "not_bark_examples": nb, "min_labels": cfg.identify.min_labels_per_dog}
 
@@ -797,7 +804,15 @@ def create_app(bark: BarkApp) -> FastAPI:
     @app.get("/api/array/feed")
     def array_feed(since: int = 0):
         arr = bark.array
-        evs = [e for e in list(arr.events) if e["n"] > since]
+        evs = [dict(e) for e in list(arr.events) if e["n"] > since]
+        # the dog each bark belongs to now (your labels, or the latest match), not just the live guess
+        if evs:
+            rows = store.q("SELECT ts, NULLIF(COALESCE(label_dog_id, pred_dog_id), -1) d FROM barks"
+                           " WHERE ts BETWEEN ? AND ?", (evs[0]["ts"] - 1, evs[-1]["ts"] + 1))
+            for e in evs:
+                near = min(rows, key=lambda r: abs(r["ts"] - e["ts"]), default=None)
+                if near is not None and abs(near["ts"] - e["ts"]) <= 0.3 and near["d"] not in (None, 0):
+                    e["dog"] = near["d"]
         return {"status": arr.status(), "events": evs,
                 "devices": None if since else _input_names()}
 

@@ -552,3 +552,7 @@ body.kiosk .beat-row { flex-direction: column; align-items: center; }
 .arr-notes { padding-left: 18px; margin: 6px 0 0; display: grid; gap: 4px; }
 @media (max-width: 640px) { .arr-polar { height: 220px; } }
 .arr-modes .help { display: block; margin-left: 26px; }
+.arr-seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 999px; overflow: hidden; }
+.arr-seg button { border: 0; background: none; padding: 4px 12px; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+.arr-seg button[aria-checked="true"] { background: var(--ink); color: var(--panel); }
+.dirblock { margin-top: 6px; }

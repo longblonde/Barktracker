@@ -551,6 +551,8 @@ async function renderClip() {
         <div><dt>${ep.false_positive ? "Sounds" : "Barks"}</dt><dd>${ep.bark_count}</dd></div>
         <div><dt>Loudest</dt><dd>${ep.peak_db != null ? ep.peak_db.toFixed(0) + " dBFS" : "–"}</dd></div>
         <div><dt>Detector confidence</dt><dd>${ep.max_prob != null ? Math.round(ep.max_prob * 100) + "%" : "–"}</dd></div>
+        ${(() => { const bs = ep.barks.filter((b) => b.bearing != null).map((b) => b.bearing).sort((a, b) => a - b);
+          return bs.length ? `<div><dt>Direction</dt><dd>about ${Math.round(bs[Math.floor(bs.length / 2)])}° <span class="small muted">${bs.length} of ${ep.barks.length} barks</span></dd></div>` : ""; })()}
         ${ep.false_positive ? "" : `<div><dt>Marked</dt><dd>${markBadge(ep.marked)}${ep.marked === "mixed" ? ` <span class="small muted">${ep.labelled} of ${ep.bark_count}</span>` : ""}</dd></div>`}
       </dl>
       ${ep.live ? `<div class="notice">Still recording. Refresh when the barking stops to hear the full clip.</div>` : ""}
@@ -649,7 +651,7 @@ async function renderClip() {
       const color = b.dog_id === NOT_BARK ? "#c2453d" : dogColor(k);
       const who = b.dog_id === NOT_BARK ? "Not a bark" : b.unknown ? "Unknown dog" : dogName(k);
       const how = b.unknown ? "marked by you" : b.label_dog_id != null ? "labelled by you" : b.pred_dog_id != null ? `guessed, ${Math.round((b.pred_conf || 0) * 100)}% sure` : "not identified yet";
-      return `<button class="mark-bark${b.unknown ? " unknown" : ""}" data-b="${b.id}" aria-pressed="${sel.has(b.id)}" style="--c:${color};left:${(b.offset / clipLen) * 100}%;width:${Math.max(0.5, (b.duration / clipLen) * 100)}%" title="${esc(who)} (${how}) at ${b.offset.toFixed(1)} s" aria-label="Bark at ${b.offset.toFixed(1)} seconds: ${esc(who)}, ${how}"></button>`;
+      return `<button class="mark-bark${b.unknown ? " unknown" : ""}" data-b="${b.id}" aria-pressed="${sel.has(b.id)}" style="--c:${color};left:${(b.offset / clipLen) * 100}%;width:${Math.max(0.5, (b.duration / clipLen) * 100)}%" title="${esc(who)} (${how}) at ${b.offset.toFixed(1)} s${b.bearing != null ? `, from about ${Math.round(b.bearing)}°` : ""}" aria-label="Bark at ${b.offset.toFixed(1)} seconds: ${esc(who)}, ${how}"></button>`;
     }).join("");
     m.querySelectorAll(".mark-bark").forEach((btn) => btn.addEventListener("click", (ev) => {
       const bid = Number(btn.dataset.b), b = ep.barks.find((x) => x.id === bid);
@@ -722,6 +724,7 @@ async function renderDogs() {
               ${[["", "Not sure"], ["small", "Small"], ["medium", "Medium"], ["large", "Large"]].map(([v, t]) => `<option value="${v}" ${(d.size || "") === v ? "selected" : ""}>${t}</option>`).join("")}
             </select></label>
             ${voiceBlock(d)}
+            ${dirBlock(d)}
             <details class="dogmore">
               <summary>Owner and address</summary>
               <div class="fields">
@@ -787,6 +790,27 @@ function shapeSvg(shape, color) {
   const W = 120, H = 28, n = shape.length, lo = -30;
   const pts = shape.map((v, i) => `${((i / (n - 1)) * W).toFixed(1)},${(H - ((Math.max(lo, v) - lo) / -lo) * (H - 2) - 1).toFixed(1)}`).join(" ");
   return `<svg class="shape" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Spectral shape of this dog's bark, low to high pitch"><polyline points="0,${H} ${pts} ${W},${H}" fill="${color}" fill-opacity=".18" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+// where a dog's barks come from (only when the direction test has been collecting)
+function dirBlock(d) {
+  const r = d.direction;
+  if (!r) return "";
+  const W = 120, H = 64, cx = 60, cy = 60, R = 54;
+  const pt = (deg, rr) => [cx - Math.cos((deg * Math.PI) / 180) * rr, cy - Math.sin((deg * Math.PI) / 180) * rr];
+  const mx = Math.max(1, ...r.hist);
+  let wedges = "";
+  r.hist.forEach((n, i) => {
+    if (!n) return;
+    const rr = 14 + (40 * n) / mx, [x0, y0] = pt(i * 10, rr), [x1, y1] = pt(i * 10 + 10, rr);
+    wedges += `<path d="M${cx},${cy} L${x0.toFixed(1)},${y0.toFixed(1)} A${rr},${rr} 0 0 1 ${x1.toFixed(1)},${y1.toFixed(1)} Z" fill="${d.color}" fill-opacity=".55"/>`;
+  });
+  const [mx2, my2] = pt(r.bearing, R);
+  return `<div class="voice dirblock">
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Directions ${esc(d.name)}'s barks came from">
+      <path d="M${cx - R},${cy} A${R},${R} 0 0 1 ${cx + R},${cy}" fill="none" stroke="var(--faint)"/>${wedges}
+      <line x1="${cx}" y1="${cy}" x2="${mx2.toFixed(1)}" y2="${my2.toFixed(1)}" stroke="var(--ink)" stroke-width="1.5"/></svg>
+    <p class="small muted" style="margin:0">Usually from about <strong>${Math.round(r.bearing)}°</strong> (${r.spread < 1 ? "tightly grouped" : `most within ±${Math.round(r.spread)}°`}), from ${r.n} bark${r.n === 1 ? "" : "s"} with a clear direction. Direction test, experimental.</p>
+  </div>`;
 }
 function voiceBlock(d) {
   const p = d.profile;

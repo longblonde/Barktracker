@@ -92,6 +92,7 @@ class MicSource:
         self._restart = threading.Event()
         self._rescan = False
         self.tap = None              # optional fn(frames x channels, ts, rate) before mono mixing
+        self.prefer_native = False   # open at the device's own rate (finer timing for the direction test)
 
     def switch(self, device) -> None:
         """Move to another input: the open stream closes and reopens on `device` within ~0.5 s."""
@@ -100,7 +101,8 @@ class MicSource:
         self._restart.set()
 
     # Names USB webcams/mics show up as in ALSA, best first (Logitech C920/C922/C930e/Brio, etc.)
-    AUTO_PATTERNS = ("c920", "c922", "c930", "brio", "logitech", "webcam", "camera", "usb")
+    AUTO_PATTERNS = ("c920", "c922", "c930", "brio", "logitech", "webcam", "camera",
+                     "voicehat", "googlevoice", "usb")      # AIY Voice HAT (I2S, two MEMS mics)
 
     def _resolve_device(self):
         import sounddevice as sd
@@ -148,10 +150,12 @@ class MicSource:
         self.device_name = info.get("name", "default")
         if not self.channels:   # 0 = auto: webcams are usually stereo; we mix down to mono
             self.channels = max(1, min(2, int(info["max_input_channels"])))
+        native = int(info["default_samplerate"])
+        if self.prefer_native and native > self.sr:
+            self.sr, self.block = native, int(native * self.block_seconds)
         try:
             sd.check_input_settings(device=dev, samplerate=self.sr, channels=self.channels, dtype="float32")
         except Exception as e:  # noqa: BLE001 - many webcams only do 32/44.1/48 kHz
-            native = int(info["default_samplerate"])
             log.warning("Input doesn't support %d Hz (%s); using %d Hz and resampling", self.sr, e, native)
             self.sr = native
             self.block = int(native * self.block_seconds)

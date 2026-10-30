@@ -123,6 +123,61 @@ class _Chan:
         return ts + len(x) / (self.sr or F.SR)
 
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS bark_dirs (
+    ts REAL NOT NULL,
+    kind TEXT,
+    bearing REAL,
+    clarity REAL,
+    valid INTEGER NOT NULL DEFAULT 0,
+    level_a REAL,
+    level_b REAL,
+    mode TEXT,
+    spacing_cm REAL
+);
+CREATE INDEX IF NOT EXISTS ix_bark_dirs_ts ON bark_dirs(ts);
+"""
+KEEP_DAYS = 365                  # direction records kept this long (they're tiny)
+
+
+def ensure_schema(store) -> None:
+    with store.tx() as c:
+        c.executescript(SCHEMA)
+
+
+def nearest_dirs(store, stamps: list[float], within: float = 0.3) -> dict[float, dict]:
+    """Direction records closest to each timestamp (barks move slightly when clips are re-scanned)."""
+    if not stamps:
+        return {}
+    rows = store.q("SELECT ts, bearing, clarity, valid, level_a, level_b FROM bark_dirs WHERE ts BETWEEN ? AND ?",
+                   (min(stamps) - within, max(stamps) + within))
+    out = {}
+    for t in stamps:
+        best = min(rows, key=lambda r: abs(r["ts"] - t), default=None)
+        if best is not None and abs(best["ts"] - t) <= within:
+            out[t] = best
+    return out
+
+
+def dog_directions(store) -> dict[int, dict]:
+    """Where each dog's barks come from: average bearing, spread and how many barks had a clear one."""
+    rows = store.q(
+        "SELECT NULLIF(COALESCE(b.label_dog_id, b.pred_dog_id), -1) d, b.label_dog_id IS NOT NULL lab, bd.bearing"
+        " FROM barks b JOIN bark_dirs bd ON bd.ts BETWEEN b.ts - 0.3 AND b.ts + 0.3"
+        " WHERE bd.valid = 1 AND COALESCE(b.label_dog_id, b.pred_dog_id) > 0")
+    by: dict[int, list] = {}
+    for r in rows:
+        by.setdefault(int(r["d"]), []).append((r["bearing"], r["lab"]))
+    out = {}
+    for d, v in by.items():
+        a = np.array([x for x, _ in v])
+        med = float(np.median(a))
+        out[d] = {"bearing": round(med, 1), "spread": round(float(np.percentile(np.abs(a - med), 75)), 1),
+                  "n": len(a), "labelled": int(sum(1 for _, l in v if l)),
+                  "hist": np.histogram(a, bins=18, range=(0, 180))[0].tolist()}
+    return out
+
+
 class ArrayMonitor:
     def __init__(self, cfg, app=None):
         self.cfg, self.app = cfg, app
@@ -250,6 +305,10 @@ class ArrayMonitor:
         cutoff = now - KEEP_SECONDS
         while self.events and self.events[0]["ts"] < cutoff:
             self.events.popleft()
+        if now - getattr(self, "_pruned", 0) > 86400 and getattr(self.app, "store", None) is not None:
+            self._pruned = now
+            with self.app.store.tx() as c:
+                c.execute("DELETE FROM bark_dirs WHERE ts < ?", (now - KEEP_DAYS * 86400,))
         return n
 
     # ---- estimates --------------------------------------------------------------------------
@@ -300,7 +359,18 @@ class ArrayMonitor:
                "angle": round(ang, 1), "valid": bool(ok and sharp >= 4.0), "sharp": round(sharp, 1),
                "tau_us": round(tau * 1e6, 1), "raw_us": round(raw * 1e6, 1),
                "level_a": round(la, 1), "level_b": round(lb, 1), "ild_db": round(la - lb, 1), "mode": mode}
+        out["dog"] = ev.get("dog")
         self.events.append(out)
+        store = getattr(self.app, "store", None)
+        if store is not None:                    # kept, so dogs' usual directions can be learned
+            try:
+                with store.tx() as c:
+                    c.execute("INSERT INTO bark_dirs(ts, kind, bearing, clarity, valid, level_a, level_b, mode, spacing_cm)"
+                              " VALUES (?,?,?,?,?,?,?,?,?)",
+                              (ev["ts"], ev["kind"], out["angle"], out["sharp"], int(out["valid"]),
+                               out["level_a"], out["level_b"], mode, self.d.array_spacing_cm))
+            except Exception:  # noqa: BLE001
+                log.debug("storing direction failed", exc_info=True)
         if self.calibrating and mode == "pair" and sharp >= 4.0 and (ev.get("rise") or 0) >= 8:
             self._apply_calibration(raw)            # first clear, loud sound after pressing Calibrate
         return out

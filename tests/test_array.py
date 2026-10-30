@@ -139,3 +139,32 @@ def test_old_estimates_are_flushed(tmp_path):
     assert len(app.array.events) <= 300 and all(e["ts"] >= now - KEEP_SECONDS for e in app.array.events)
     assert app.array.done == set()                         # nothing the detector still holds
     app.shutdown()
+
+
+def test_directions_are_kept_per_bark_and_per_dog(tmp_path):
+    wav = tmp_path / "stereo.wav"
+    stereo_scene(wav, [40, 40, 40, 140, 140], 0.5, seed=4)
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    cfg.dev.array, cfg.dev.array_mode, cfg.dev.array_spacing_cm = True, "stereo", 50
+    t0 = time.time() - 60
+    src = FileSource(str(wav), start_ts=t0)
+    app = BarkApp(cfg, src, start_detector=False)
+    app.detector = BarkDetector(cfg, HeuristicClassifier(), app.store)
+    run_source(app.detector, src)
+    for _ in range(5):
+        app.array.process(now=time.time())
+    n = app.store.q1("SELECT COUNT(*) n FROM bark_dirs WHERE valid=1")["n"]
+    assert n >= 5
+    c = TestClient(create_app(app))
+    rex = c.post("/api/dogs", json={"name": "Rex"}).json()
+    pip = c.post("/api/dogs", json={"name": "Pip"}).json()
+    for e in c.get("/api/episodes?limit=50").json()["items"]:      # label each bark by when it was
+        for bk in c.get(f"/api/episodes/{e['id']}").json()["barks"]:
+            dog = rex["id"] if bk["ts"] - t0 < 1.5 + 2.5 * 2.5 else pip["id"]
+            c.post("/api/barks/label", json={"bark_ids": [bk["id"]], "dog_id": dog})
+    dogs = {d["name"]: d for d in c.get("/api/dogs").json()["dogs"]}
+    assert abs(dogs["Rex"]["direction"]["bearing"] - 40) < 6 and abs(dogs["Pip"]["direction"]["bearing"] - 140) < 6
+    ep = c.get("/api/episodes?limit=1").json()["items"][0]
+    barks = c.get(f"/api/episodes/{ep['id']}").json()["barks"]
+    assert any(b["bearing"] is not None for b in barks)
+    app.shutdown()

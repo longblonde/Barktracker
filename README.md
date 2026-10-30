@@ -169,7 +169,21 @@ For every sound the detector considers, it estimates a bearing from the time dif
 - **Stereo:** the main microphone's own two channels (the C920 has two capsules a few centimetres apart). One clock, so timing is exact, but the small spacing makes the angle coarse. Measure the spacing between the mic holes and enter it.
 - **Pair:** the main microphone plus a second USB microphone, ideally a metre or more apart for a finer angle. Two USB devices run on separate clocks, so press **Calibrate** and clap once straight ahead (90°) to measure the offset between them; it drifts, so recalibrate now and then. The level difference between the mics needs no calibration and is useful on its own, for example with one mic in a dish aimed at a kennel.
 
-Two microphones give a direction, not a distance.
+Two microphones give a direction, not a distance. Loudness hints at distance, but a dog's barks vary by ±10 dB on their own, so treat it as a weak clue.
+
+While the test is on, every logged bark's direction is kept for a year. The Dogs page shows where each dog usually barks from (once a few of its barks have a clear direction), a clip shows its direction among the facts, and the chart can be coloured by dog instead of by decision. A dog that always sits in the same wedge is a good sign direction will help tell it apart.
+
+### Google AIY Voice HAT (v1)
+
+The original AIY Voice Kit HAT (the larger black board) has two MEMS microphones 7.1 cm apart on one clock, which suits the stereo mode well.
+
+1. Fit the HAT and its microphone board, then run `./scripts/setup-voicehat.sh`. It adds `dtoverlay=googlevoicehat-soundcard` to `/boot/firmware/config.txt` (keeping a backup). Reboot.
+2. Run `./scripts/setup-voicehat.sh check`. It lists sound cards and records 3 seconds, reporting each mic's level. Both should be similar; a dead channel means a loose ribbon.
+3. In Settings → System, pick the Voice HAT as the microphone (it's picked automatically when nothing else is set). Turn on the direction test, choose **Stereo**, and press **AIY Voice HAT: 7.1 cm** on the Direction page. If the chart comes out mirrored, tick **Mic A is on the other side** in the direction settings.
+
+With the direction test on, BarkTracker records at the card's native rate (48 kHz on the HAT) for finer timing, and resamples for detection as before. The speaker amp, button and LED aren't used.
+
+For an outdoor box: mount it flat against a wall so the "behind" half of the circle is blocked, which removes the front/back ambiguity. Cover the mic holes with an acoustic membrane vent (the kind used on outdoor cameras) rather than leaving them open, add a foam wind screen, and keep the Pi inside the box with the HAT, because I2S mic leads don't like long cables. Leave a drain hole at the lowest point and expect condensation on cold mornings.
 
 ## Backup and restore
 
