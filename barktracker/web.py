@@ -5,6 +5,7 @@ import asyncio
 import base64
 import csv
 import json
+import re
 import io
 import secrets
 import shutil
@@ -179,7 +180,19 @@ def create_app(bark: BarkApp) -> FastAPI:
     # ---- pages ----------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return (STATIC / "index.html").read_text()
+        """The page, with every script and stylesheet tagged by build so a `git pull` shows up at once,
+        and told not to be kept without checking (browsers otherwise reuse an old copy after updates)."""
+        tag = build.get("commit") or build["version"]
+        html = (STATIC / "index.html").read_text()
+        html = re.sub(r'(src|href)="(/static/[^"?]+\.(?:js|css))"', rf'\1="\2?v={tag}"', html)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+    @app.middleware("http")
+    async def revalidate_static(request: Request, call_next):
+        resp = await call_next(request)
+        if request.url.path.startswith("/static/") and "cache-control" not in resp.headers:
+            resp.headers["Cache-Control"] = "no-cache"          # reuse only after checking the ETag
+        return resp
 
     # ---- status ---------------------------------------------------------------
     @app.get("/api/status")

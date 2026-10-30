@@ -66,3 +66,19 @@ def test_basic_auth(tmp_path):
     c = TestClient(create_app(app))
     assert c.get("/api/status").status_code == 401
     assert c.get("/api/status", auth=("me", "secret")).status_code == 200
+
+
+def test_page_is_never_stale_after_an_update(tmp_path):
+    import re
+    from fastapi.testclient import TestClient
+    from barktracker.app import BarkApp
+    from barktracker.config import Config
+    from barktracker.web import create_app
+    app = BarkApp(Config(data_dir=str(tmp_path)), None, start_detector=False)
+    c = TestClient(create_app(app))
+    r = c.get("/")
+    assert r.headers["cache-control"] == "no-cache"
+    scripts = re.findall(r'src="(/static/[^"]+\.js[^"]*)"', r.text)
+    assert scripts and all("?v=" in s for s in scripts)
+    assert c.get("/static/core.js").headers["cache-control"] == "no-cache"
+    app.shutdown()
