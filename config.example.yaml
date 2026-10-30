@@ -48,12 +48,12 @@ notify:
   min_duration: 30             # only for episodes at least this long (seconds)
 
 ui:
-  # The live band's look and behavior (BARK words, daytime napping and its threshold, "Hearing a car"
-  # notes, alert color) are part of the theme now: Settings > Theme. The values below are only read
-  # once, by installs upgrading from before themes, to carry choices over into a theme.
+  day_nap_below_dbfs: -50      # calm daytime (napping dog on the live band): background noise below this
+  # The rest of the live band's look and behavior (BARK words, daytime napping on or off, "Hearing a
+  # car" notes, alert color) is part of the theme now: Settings > Theme. The values below are only
+  # read once, by installs upgrading from before themes, to carry choices over into a theme.
   bark_words: true
   day_nap: true
-  day_nap_below_dbfs: -50
   sound_notes: true
   sound_note_min: 0.8
   alert_color: "#e8a800"

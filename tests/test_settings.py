@@ -211,17 +211,21 @@ def test_old_alert_color_becomes_a_theme(tmp_path):
 def test_theme_controls_the_live_band(tmp_path):
     cfg, app, c = make(tmp_path)
     r = c.get("/api/themes").json()
-    assert r["theme"]["live_band"] == {"day_nap": True, "day_nap_below_dbfs": -50.0, "sound_notes": True, "sound_note_min": 0.8}
+    assert r["theme"]["live_band"] == {"day_nap": True, "sound_notes": True, "sound_note_min": 0.8}
     assert "day_nap" in r["live_band"]                                  # labels for the editor
-    t = {**r["theme"], "name": "Porch", "live_band": {"day_nap": False, "day_nap_below_dbfs": -200, "sound_notes": False}}
+    t = {**r["theme"], "name": "Porch", "live_band": {"day_nap": False, "sound_notes": False, "sound_note_min": 5,
+                                                      "day_nap_below_dbfs": -80}}
     mine = c.post("/api/themes", json=t).json()["theme"]
-    assert mine["live_band"]["day_nap"] is False and mine["live_band"]["day_nap_below_dbfs"] == -90.0    # clamped
-    assert mine["live_band"]["sound_note_min"] == 0.8                   # missing: the default
+    assert mine["live_band"] == {"day_nap": False, "sound_notes": False, "sound_note_min": 0.99}   # clamped
+    assert cfg.ui.day_nap_below_dbfs == -50.0                           # calm is the microphone's, not a theme's
     assert cfg.ui.day_nap is False and cfg.ui.sound_notes is False      # the live band follows at once
     assert c.get(f"/api/themes/{mine['id']}.json").json()["live_band"]["day_nap"] is False   # shared with it
     c.put("/api/themes/active", json={"id": "default"})
     assert cfg.ui.day_nap is True and cfg.ui.sound_notes is True
-    assert not any(k.startswith("ui.") for k in c.get("/api/settings").json()["values"])   # no longer plain settings
+    vals = c.get("/api/settings").json()["values"]
+    assert [k for k in vals if k.startswith("ui.")] == ["ui.day_nap_below_dbfs"]   # the rest moved into themes
+    c.put("/api/settings", json={"values": {"ui.day_nap_below_dbfs": -62}})
+    assert cfg.ui.day_nap_below_dbfs == -62.0
     app.shutdown()
 
 
@@ -229,12 +233,13 @@ def test_old_live_band_settings_move_into_a_theme(tmp_path):
     from barktracker.storage import Store
     st = Store(tmp_path / "barktracker.db")
     st.set_meta("theme", "default")
-    st.set_meta("app_settings", {"ui.day_nap": False, "ui.sound_note_min": 0.9, "audio.gain_db": 6})
+    st.set_meta("app_settings", {"ui.day_nap": False, "ui.sound_note_min": 0.9, "ui.day_nap_below_dbfs": -60, "audio.gain_db": 6})
     cfg, app, c = make(tmp_path)
     t = c.get("/api/themes").json()["theme"]
     assert t["name"] == "My theme" and t["live_band"]["day_nap"] is False and t["live_band"]["sound_note_min"] == 0.9
     assert cfg.ui.day_nap is False and cfg.ui.sound_note_min == 0.9
-    assert app.store.get_meta("app_settings") == {"audio.gain_db": 6}
+    assert app.store.get_meta("app_settings") == {"ui.day_nap_below_dbfs": -60, "audio.gain_db": 6}   # stays a setting
+    assert cfg.ui.day_nap_below_dbfs == -60.0
     app.shutdown()
     cfg2, app2, c2 = make(tmp_path)                                     # only once
     assert len([x for x in c2.get("/api/themes").json()["themes"] if not x["builtin"]]) == 1

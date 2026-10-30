@@ -32,6 +32,7 @@ SPECS = {s.key: s for s in [
     Spec("detection.episode_gap", "float", 1, 120),
     Spec("detection.min_episode_barks", "int", 1, 50),
     Spec("detection.suppress_learned_false_positives", "bool"),
+    Spec("ui.day_nap_below_dbfs", "float", -90, -10),      # calm enough for the live band's daytime nap
     Spec("audio.gain_db", "float", -12, 30),
     Spec("clips.preroll", "float", 0, 10),
     Spec("clips.postroll", "float", 0, 30),

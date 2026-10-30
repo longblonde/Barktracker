@@ -13,7 +13,7 @@ A theme file looks like:
    "colors": {"light": {"ink": "#1d2833", ...}, "dark": {"ink": "#e4e9ec", ...}},
    "alert_color": "#e8a800", "radius": 8,
    "behaviors": {"bark_words": true, "motion": "full", "tab_alert": true},
-   "live_band": {"day_nap": true, "day_nap_below_dbfs": -50, "sound_notes": true, "sound_note_min": 0.8}}
+   "live_band": {"day_nap": true, "sound_notes": true, "sound_note_min": 0.8}}
 Anything missing is taken from the default theme.
 """
 from __future__ import annotations
@@ -47,10 +47,10 @@ BEHAVIORS = {
     "tab_alert": ("Browser tab turns the alert color and says “Barking Detected”", True),
     "motion": ("Animations", "full"),           # full | reduced
 }
-# what the live band shows when (the server picks the picture, so these apply to every screen)
+# what the live band shows when (the server picks the picture, so these apply to every screen). What
+# counts as calm depends on the microphone, so that level is a microphone setting (ui.day_nap_below_dbfs).
 LIVE_BAND = {
     "day_nap": ("Show the napping dog in the daytime when it's calm", True),
-    "day_nap_below_dbfs": ("Calm means background noise below", -50.0),      # dBFS, -90 to -10
     "sound_notes": ("Name other sounds the Pi recognizes, like “Hearing a car”", True),
     "sound_note_min": ("Only when the sound model is at least", 0.8),         # 0.3 to 0.99
 }
@@ -156,12 +156,11 @@ def validate(t: dict) -> dict:
     try:
         out["live_band"] = {
             "day_nap": bool(lb.get("day_nap", d["day_nap"])),
-            "day_nap_below_dbfs": max(-90.0, min(-10.0, float(lb.get("day_nap_below_dbfs", d["day_nap_below_dbfs"])))),
             "sound_notes": bool(lb.get("sound_notes", d["sound_notes"])),
             "sound_note_min": max(0.3, min(0.99, float(lb.get("sound_note_min", d["sound_note_min"])))),
         }
     except (TypeError, ValueError):
-        raise ValueError("live_band levels must be numbers") from None
+        raise ValueError("live_band sound_note_min must be a number") from None
     return out
 
 
@@ -267,8 +266,9 @@ def migrate_live_band(cfg, store) -> None:
             set_active(cfg, store, save(cfg, data)["id"])
         else:
             save(cfg, data, t["id"])
-    if any(k.startswith("ui.") for k in saved):
-        store.set_meta("app_settings", {k: v for k, v in saved.items() if not k.startswith("ui.")})
+    gone = {f"ui.{k}" for k in LIVE_BAND} | {"ui.alert_color", "ui.bark_words"}     # now in the theme
+    if gone & saved.keys():
+        store.set_meta("app_settings", {k: v for k, v in saved.items() if k not in gone})
     store.set_meta("live_band_in_theme", True)
 
 

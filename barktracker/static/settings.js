@@ -75,6 +75,7 @@ function drawMic(st) {
       ${fieldNum("audio.gain_db", "Microphone boost", v["audio.gain_db"], { unit: "dB", min: -12, max: 30, help: "Webcams adjust their own gain; leave at 0 unless barks look quiet. The AIY Voice HAT has none: start at +18 dB (docs/MICROPHONES.md)." })}
       ${fieldNum("detection.episode_gap", "Quiet time that ends a clip", v["detection.episode_gap"], { unit: "seconds", min: 1, max: 120, step: 0.5 })}
       ${fieldNum("detection.min_episode_barks", "Smallest clip to keep", v["detection.min_episode_barks"], { unit: "barks", min: 1, max: 50, help: "2 skips single woofs." })}
+      ${fieldNum("ui.day_nap_below_dbfs", "Calm means background noise below", v["ui.day_nap_below_dbfs"], { unit: "dBFS", min: -90, max: -10, help: `The live band's napping dog shows in the daytime when it's this calm (if the theme allows it). Depends on the microphone and its boost. <span id="ambNow">Background noise right now: measuring…</span>` })}
     </div>
     ${fieldCheck("detection.suppress_learned_false_positives", "Drop sounds that match clips marked “Not a bark”", v["detection.suppress_learned_false_positives"])}
     <h3>Telling dogs apart</h3>
@@ -105,15 +106,21 @@ function drawMic(st) {
       if (inp.name === "chmode" || inp.name === "direction.device" && m !== "pair") continue;
       vals[inp.name] = inp.type === "checkbox" ? inp.checked : inp.value;
     }
-    try { const st2 = await saveApp(vals, m === "mono" ? "Saved: mixing to mono" : "Saved: direction is on; see Detection and tuning"); sumMic({ ...st, values: st2.values }); }
+    try { const st2 = await saveApp(vals, m === "mono" ? "Saved: mixing to mono" : "Saved: direction is on; see Detection and tuning"); sumMic({ ...st, values: st2.values }); if (S.media) drawPictures(S.media); }
     catch (e) { toast(e.message); }
   };
   $("#resetApp").onclick = async () => {
     if (!confirm("Undo every change made here to microphone, detection, storage and matching settings, and go back to config.yaml?")) return;
     const st2 = await api("/api/settings", { method: "PUT", body: { reset: true } });
-    toast("Restored config.yaml values"); S.values = st2.values; drawMic(st2); drawStorage(st2);
+    toast("Restored config.yaml values"); S.values = st2.values; drawMic(st2); drawStorage(st2); if (S.media) drawPictures(S.media);
   };
   drawMics(v["audio.device"]);
+  clearInterval(S.ambTimer);
+  S.ambTimer = setInterval(() => {
+    const a = $("#ambNow"); if (!a) { clearInterval(S.ambTimer); return; }
+    const l = Beat.latest();
+    a.textContent = l.ambient_db != null ? `Background noise right now: ${Math.round(l.ambient_db)} dBFS.` : "Background noise right now: not available (not listening).";
+  }, 1000);
 }
 
 // ---- alerts to other apps ---------------------------------------------------------------------
@@ -213,8 +220,6 @@ async function drawTheme() {
       <p class="small muted intro">What the band at the top of every page shows, and when. These apply when you save.</p>
       <fieldset class="theme-ed" ${dis}>
         <label class="check"><input type="checkbox" id="lbNap" ${lbv.day_nap ? "checked" : ""}> ${esc(lbt.day_nap)}</label>
-        <label>${esc(lbt.day_nap_below_dbfs)}<span class="unit"><input type="number" id="lbNapBelow" value="${lbv.day_nap_below_dbfs}" min="-90" max="-10" step="1">dBFS</span>
-          <span class="help" id="ambNow">Background noise right now: measuring…</span></label>
         <label class="check"><input type="checkbox" id="lbNotes" ${lbv.sound_notes ? "checked" : ""}> ${esc(lbt.sound_notes)}</label>
         <label>${esc(lbt.sound_note_min)}<span class="unit"><input type="number" id="lbNoteMin" value="${Math.round(lbv.sound_note_min * 100)}" min="30" max="99" step="1">% sure</span></label>
         <label class="check"><input type="checkbox" id="thWords" ${edit.behaviors.bark_words ? "checked" : ""}> ${esc(r.behaviors.bark_words)}</label>
@@ -250,12 +255,6 @@ async function drawTheme() {
   const wire = () => {
     el.querySelectorAll("[data-use]").forEach((b) => b.onclick = async () => after(await api("/api/themes/active", { method: "PUT", body: { id: b.dataset.use } }), "Theme changed"));
     el.querySelectorAll("[data-scheme]").forEach((b) => b.onclick = () => { scheme = b.dataset.scheme; draw(); });
-    clearInterval(S.ambTimer);
-    S.ambTimer = setInterval(() => {
-      const a = $("#ambNow"); if (!a) { clearInterval(S.ambTimer); return; }
-      const l = Beat.latest();
-      a.textContent = l.ambient_db != null ? `Background noise right now: ${Math.round(l.ambient_db)} dBFS` : "Background noise right now: not available (not listening)";
-    }, 1000);
     $("#thDup").onclick = () => {                 // name the copy right here (no pop-up: some browsers block them)
       const btn = $("#thDup");
       if ($("#thDupRow")) { $("#thDupName").focus(); return; }
@@ -293,7 +292,6 @@ async function drawTheme() {
     on("#thAlert", "input", (x) => { edit.alert_color = x.value; });
     on("#thWords", "change", (x) => { edit.behaviors.bark_words = x.checked; });
     on("#lbNap", "change", (x) => { lbv.day_nap = x.checked; });
-    on("#lbNapBelow", "input", (x) => { if (x.value !== "") lbv.day_nap_below_dbfs = Number(x.value); });
     on("#lbNotes", "change", (x) => { lbv.sound_notes = x.checked; });
     on("#lbNoteMin", "input", (x) => { if (x.value !== "") lbv.sound_note_min = Number(x.value) / 100; });
     on("#thTab", "change", (x) => { edit.behaviors.tab_alert = x.checked; });
@@ -611,10 +609,16 @@ function drawPictures(m) {
       : `This theme has no pictures of its own, so it uses yours, shared by every theme without pictures. You can also copy files straight into <code>${esc(m.folder)}/quiet</code>, <code>/active</code> and <code>/bark</code> on the Pi.`}
       Photos, GIFs, SVGs and short MP4 or WebM loops all work; if a column has several, one is picked at random.</p>
     <div class="three">
-      ${col("quiet", "Napping", "Quiet hours, or a calm daytime (see above).")}
+      ${col("quiet", "Napping", `Quiet hours, or a calm daytime: background noise below <a href="#/settings/mic" data-napset>${esc(String(S.values?.["ui.day_nap_below_dbfs"] ?? -50))} dBFS</a> (a microphone setting).`)}
       ${col("active", "Sitting", "Daytime background noise, or louder sounds without barking.")}
       ${col("bark", "Barking", "While a bark is being detected.")}
     </div>`;
+  const ns = box.querySelector("[data-napset]");
+  if (ns) ns.onclick = (e) => {                   // jump to the setting and put the cursor in it
+    e.preventDefault(); openCard("mic");
+    const inp = $('#f-mic [name="ui.day_nap_below_dbfs"]');
+    if (inp) setTimeout(() => { inp.focus(); inp.select(); }, 350);
+  };
   box.querySelectorAll("[data-up]").forEach((inp) => inp.addEventListener("change", async () => {
     let r = m;
     for (const f of inp.files) {
