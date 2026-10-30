@@ -40,12 +40,7 @@ class LiveMode:
         if th is None or now - t_cached > 5:
             th = O.get_ordinance(self.store)["thresholds"]
             self._quiet_cache = (now, th)
-        dt = datetime.fromtimestamp(now, self.tz) if self.tz else datetime.fromtimestamp(now)
-        start, end = O._parse_hhmm(th["quiet_start"]), O._parse_hhmm(th["quiet_end"])
-        t = dt.time()
-        if start == end:
-            return False
-        return start <= t < end if start < end else (t >= start or t < end)
+        return O.in_quiet_hours(now, th, O.Clock(self.cfg.timezone))
 
     @staticmethod
     def is_barking(det, now: float | None = None) -> bool:

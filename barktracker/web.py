@@ -42,7 +42,11 @@ MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
                ".webp": "image/webp", ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm"}
 VIDEO = {".mp4", ".webm"}
 MEDIA_KINDS = ("quiet", "active", "bark")
-LIVE_SLOW, LIVE_FAST = 1 / 6, 1 / 20      # seconds between live updates: quiet / barking   # nap / sit / bark pictures
+LIVE_SLOW, LIVE_FAST = 1 / 6, 1 / 20      # seconds between live updates: quiet / barking
+DOUBT_PROB = 0.6                           # a clip is "Unreviewed" below this bark score...
+DOUBT_MATCH = 0.75                         # ...or with an automatic dog match below this
+import sys as _sys
+_mod = _sys.modules[__name__]              # tunables are read through the module (Settings > Advanced)
 
 
 class DogIn(BaseModel):
@@ -53,6 +57,7 @@ class DogIn(BaseModel):
     address: str | None = None
     description: str | None = None
     size: str | None = None
+    breed: str | None = None
 
 
 class LabelIn(BaseModel):
@@ -134,8 +139,6 @@ def create_app(bark: BarkApp) -> FastAPI:
             return "mixed"
         return "manual" if reviewed else "auto"
 
-    DOUBT_PROB, DOUBT_MATCH = 0.6, 0.75
-
     def review_tag(e: dict, marked: str, split: dict, match: dict) -> str:
         """Manual (you decided), Auto (found and matched with confidence), or Unreviewed (nobody
         has looked and something about it is uncertain)."""
@@ -143,7 +146,7 @@ def create_app(bark: BarkApp) -> FastAPI:
             return "manual"
         if e["false_positive"]:
             return "auto"
-        doubt = (e["max_prob"] or 0) < DOUBT_PROB or any(v < DOUBT_MATCH for v in match.values()) \
+        doubt = (e["max_prob"] or 0) < _mod.DOUBT_PROB or any(v < _mod.DOUBT_MATCH for v in match.values()) \
             or ("u" in split and has_dogs())
         return "unreviewed" if doubt else "auto"
 
@@ -258,21 +261,13 @@ def create_app(bark: BarkApp) -> FastAPI:
         th = ordn["thresholds"]
         incs = O.build_incidents([{**e, "subject_barks": e["bark_count"]} for e in eps], th, O.Clock(cfg.timezone),
                                  ordn["rules"])
-        # quiet hours falling on this day, as timestamps (handles windows across midnight and DST)
-        qs, qe = O._parse_hhmm(th["quiet_start"]), O._parse_hhmm(th["quiet_end"])
-
-        def at(day_: date, t) -> float:
-            dt = datetime(day_.year, day_.month, day_.day, t.hour, t.minute, tzinfo=tz) if tz else \
-                datetime(day_.year, day_.month, day_.day, t.hour, t.minute)
-            return dt.timestamp()
-        if qs == qe:
-            quiet = []
-        elif qs < qe:
-            quiet = [[at(d, qs), at(d, qe)]]
-        else:
-            quiet = [[t0, at(d, qe)], [at(d, qs), t1]]
+        # quiet hours falling on this day, as timestamps (handles windows across midnight, DST, weekends)
+        clock = O.Clock(cfg.timezone)
+        quiet = [[max(t0, x), min(t1, y)] for x, y in O.quiet_spans(t0, t1, th, clock)]
+        qs, qe = O.quiet_window(th, d)
         return {"date": d.isoformat(), "start_ts": t0, "end_ts": t1, "labels": O.rule_labels(ordn),
-                "quiet": quiet, "quiet_start": th["quiet_start"], "quiet_end": th["quiet_end"],
+                "quiet": quiet, "quiet_start": qs.strftime("%H:%M"), "quiet_end": qe.strftime("%H:%M"),
+                "quiet_text": O.quiet_text(th),
                 "incidents": [{"start_ts": i["start_ts"], "end_ts": i["end_ts"], "flags": i["flags"],
                                "duration": i["duration"]} for i in incs],
                 "episodes": [{**ep_view(e, split.get(e["id"], {})), "share": round(share(split.get(e["id"], {}), sel), 3)}
@@ -324,21 +319,19 @@ def create_app(bark: BarkApp) -> FastAPI:
         for i in range(days):
             weekdays[(d0 + timedelta(days=i)).weekday()] += 1
         th = O.get_ordinance(store)["thresholds"]
-        qs, qe = O._parse_hhmm(th["quiet_start"]), O._parse_hhmm(th["quiet_end"])
-        a, b = qs.hour * 60 + qs.minute, qe.hour * 60 + qe.minute
-        spans = [] if a == b else ([(a, b)] if a < b else [(a, 1440), (0, b)])
-        quiet = []
-        for h in range(24):
-            parts = []
-            for x, y in spans:
-                lo, hi = max(x, h * 60), min(y, h * 60 + 60)
-                if hi > lo:
-                    parts.append([round((lo - h * 60) / 60, 3), round((hi - h * 60) / 60, 3)])
-            quiet.append(parts)
+        week = O.quiet_week(th)
+        quiet = []                       # [weekday][hour] -> parts of that hour in quiet hours (0..1)
+        for r in range(7):
+            row = []
+            for h in range(24):
+                c0 = r * 1440 + h * 60
+                row.append([[round((max(x, c0) - c0) / 60, 3), round((min(y, c0 + 60) - c0) / 60, 3)]
+                            for x, y in week if min(y, c0 + 60) > max(x, c0)])
+            quiet.append(row)
         return {"days": days, "grid": [[round(v, 1) for v in row] for row in grid],
                 "barks": barks_n, "episodes": eps_n,
                 "dogs": [[dict(c) for c in row] for row in by_dog],
-                "weekdays": weekdays, "quiet": quiet,
+                "weekdays": weekdays, "quiet": quiet, "quiet_text": O.quiet_text(th),
                 "quiet_start": th["quiet_start"], "quiet_end": th["quiet_end"]}
 
     # ---- episodes -------------------------------------------------------------
@@ -346,8 +339,30 @@ def create_app(bark: BarkApp) -> FastAPI:
     def episodes(limit: int = 50, offset: int = 0, dog: str | None = None,
                  unreviewed: bool = False, include_fp: bool = False, min_duration: float = 0.0,
                  date_from: str | None = None, date_to: str | None = None, kind: str = "barking",
-                 dogs: str | None = None, review: str | None = None, since: float | None = None):
+                 dogs: str | None = None, review: str | None = None, since: float | None = None,
+                 tag: str | None = None):
         where, args = ["1=1"], []
+        if tag:                     # the Clips page's status filter, over every clip (same rules as review_tag)
+            manual = ("(e.reviewed=1 OR EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id"
+                      " AND b.label_dog_id IS NOT NULL))")
+            doubt = ("(COALESCE(e.max_prob, 0) < ? OR EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id"
+                     " AND b.label_dog_id IS NULL AND b.pred_dog_id > 0 GROUP BY b.pred_dog_id HAVING AVG(b.pred_conf) < ?)"
+                     " OR (? AND EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND b.label_dog_id IS NULL"
+                     " AND b.pred_dog_id IS NULL)))")
+            dargs = [_mod.DOUBT_PROB, _mod.DOUBT_MATCH, int(has_dogs())]
+            if tag == "manual":
+                where.append(f"e.false_positive=0 AND {manual}")
+            elif tag == "unreviewed":
+                where.append(f"e.false_positive=0 AND NOT {manual} AND {doubt}")
+                args.extend(dargs)
+            elif tag == "auto":
+                where.append(f"e.false_positive=0 AND NOT {manual} AND NOT {doubt}")
+                args.extend(dargs)
+            elif tag == "nb":
+                where.append("e.false_positive=1")
+                include_fp = True
+            else:
+                raise HTTPException(400, "tag is manual, auto, unreviewed or nb")
         if since:
             where.append("e.start_ts > ?")
             args.append(since)
@@ -583,6 +598,116 @@ def create_app(bark: BarkApp) -> FastAPI:
                 "unidentified": store.q1("SELECT COUNT(*) n FROM barks b JOIN episodes e ON e.id=b.episode_id"
                                          " WHERE e.false_positive=0 AND b.label_dog_id IS NULL AND b.pred_dog_id IS NULL")["n"]}
 
+    @app.get("/api/dogs/{dog_id}/detail")
+    def dog_detail(dog_id: int, days: int = 90):
+        """Everything about one dog: when it barks (daily totals, hour of day, weekday by hour), its
+        voice in detail (pitch, tone and length spread, typical barks to hear and see), where it
+        barks from, its rhythm, and its longest clips."""
+        d = store.q1("SELECT * FROM dogs WHERE id=?", (dog_id,))
+        if not d:
+            raise HTTPException(404, "No such dog")
+        days = max(7, min(days, 366))
+        d_end = today()
+        d0 = d_end - timedelta(days=days - 1)
+        t0, t1 = day_start(d0), day_start(d_end + timedelta(days=1))
+        rows = store.q(
+            "SELECT b.id, b.ts, b.duration, b.prob, b.peak_db, b.features, b.label_dog_id IS NOT NULL lab, b.episode_id,"
+            " e.clip_start_ts, e.start_ts est, e.clip_path FROM barks b JOIN episodes e ON e.id=b.episode_id"
+            " WHERE e.false_positive=0 AND COALESCE(b.label_dog_id, b.pred_dog_id)=? ORDER BY b.ts", (dog_id,))
+        recent = [r for r in rows if t0 <= r["ts"] < t1]
+        per_day = {(d0 + timedelta(days=i)).isoformat(): [0, 0.0] for i in range(days)}
+        hours = [0] * 24
+        week = [[0] * 24 for _ in range(7)]
+        for r in recent:
+            dt = to_dt(r["ts"])
+            k = dt.date().isoformat()
+            if k in per_day:
+                per_day[k][0] += 1
+            hours[dt.hour] += 1
+            week[dt.weekday()][dt.hour] += 1
+        # barking time per day: this dog's share of each clip's span
+        split = dog_split(t0, t1)
+        for e in store.episodes_between(t0, t1):
+            sp = split.get(e["id"], {})
+            tot = sum(sp.values())
+            if tot and str(dog_id) in sp:
+                k = to_dt(e["start_ts"]).date().isoformat()
+                if k in per_day:
+                    per_day[k][1] += max(0.0, e["end_ts"] - e["start_ts"]) * sp[str(dog_id)] / tot
+        # voice: spread of pitch, tone and length, and the barks closest to the dog's typical sound
+        nf = 2 * F.N_MELS + 8                      # a full voice descriptor (older or odd rows are skipped)
+        allf = [(r, np.frombuffer(r["features"], dtype=np.float32)) for r in rows if r["features"]]
+        allf = [(r, f) for r, f in allf if len(f) >= nf]
+        feats = [(r, f) for r, f in allf if r["lab"]] or allf
+        voice = None
+        typical = []
+        if feats:
+            vals = [V.decode(f) for _, f in feats]
+            pitch = [v["pitch_hz"] for v in vals if 0 < v["pitch_hz"] < 3000]
+            tone = [v["brightness_hz"] for v in vals]
+            length = [v["length_s"] for v in vals]
+            hist = lambda a, lo, hi, n=16: np.histogram(np.clip(a, lo, hi), bins=n, range=(lo, hi))[0].tolist() if len(a) else []
+            voice = {"pitch": {"hist": hist(pitch, 100, 2000), "lo": 100, "hi": 2000},
+                     "tone": {"hist": hist(tone, 300, 4000), "lo": 300, "hi": 4000},
+                     "length": {"hist": hist(length, 0.05, 1.2), "lo": 0.05, "hi": 1.2},
+                     "profile": V.summarize([f for _, f in feats]), "from": len(feats),
+                     "confirmed": bool(feats[0][0]["lab"])}
+            X = np.stack([f for _, f in feats])
+            mu, sd = X.mean(0), X.std(0) + 1e-3
+            dist = (((X - mu) / sd) ** 2).sum(1)
+            seen = set()
+            for i in np.argsort(dist):
+                r = feats[int(i)][0]
+                if r["episode_id"] in seen or not r["clip_path"] or not Path(r["clip_path"]).exists():
+                    continue
+                seen.add(r["episode_id"])
+                typical.append({"bark_id": r["id"], "episode_id": r["episode_id"], "ts": r["ts"],
+                                "offset": round(r["ts"] - (r["clip_start_ts"] or r["est"]), 2),
+                                "duration": round(r["duration"], 2), "prob": round(r["prob"], 2)})
+                if len(typical) >= 5:
+                    break
+        from .array import dog_directions
+        longest = store.q(
+            "SELECT e.id, e.start_ts, e.end_ts, e.bark_count FROM episodes e WHERE e.false_positive=0 AND e.start_ts >= ?"
+            " AND EXISTS (SELECT 1 FROM barks b WHERE b.episode_id=e.id AND COALESCE(b.label_dog_id, b.pred_dog_id)=?)"
+            " ORDER BY (e.end_ts - e.start_ts) DESC LIMIT 5", (t0, dog_id))
+        return {"dog": d, "days": days,
+                "totals": {"barks": len(rows), "labelled": sum(1 for r in rows if r["lab"]),
+                           "first_ts": rows[0]["ts"] if rows else None, "last_ts": rows[-1]["ts"] if rows else None,
+                           "recent_barks": len(recent), "recent_seconds": round(sum(v[1] for v in per_day.values()), 1)},
+                "daily": [{"date": k, "barks": v[0], "seconds": round(v[1], 1)} for k, v in per_day.items()],
+                "hours": hours, "week": week,
+                "voice": voice, "typical": typical,
+                "direction": dog_directions(store).get(dog_id), "rhythm": DS.rhythm(store).get(dog_id),
+                "longest": [{**e, "duration": round(e["end_ts"] - e["start_ts"], 1)} for e in longest]}
+
+    @app.get("/api/barks/{bark_id}/wave")
+    def bark_wave(bark_id: int, width: int = 400, pad: float = 0.15):
+        """One bark's waveform (min/max per column, -1..1) with a little sound either side, and its
+        spectrogram, for the dog page."""
+        r = store.q1("SELECT b.ts, b.duration, e.clip_path, e.clip_start_ts, e.start_ts est FROM barks b JOIN episodes e"
+                     " ON e.id=b.episode_id WHERE b.id=?", (bark_id,))
+        if not r or not r["clip_path"] or not Path(r["clip_path"]).exists():
+            raise HTTPException(404, "audio not available")
+        x, sr = read_wav(r["clip_path"])
+        x = F.resample(x, sr)
+        off = r["ts"] - (r["clip_start_ts"] or r["est"])
+        a = max(0, int((off - pad) * F.SR))
+        b = min(len(x), int((off + r["duration"] + pad) * F.SR))
+        seg = x[a:b]
+        if not len(seg):
+            raise HTTPException(404, "audio not available")
+        width = max(50, min(width, 1200))
+        peak = float(np.max(np.abs(seg))) or 1.0
+        cols = np.array_split(seg / peak, width)
+        img, secs = F.spectrogram_image(seg, width=width, height=64)
+        return {"min": [round(float(c.min()), 3) if len(c) else 0 for c in cols],
+                "max": [round(float(c.max()), 3) if len(c) else 0 for c in cols],
+                "seconds": round(len(seg) / F.SR, 3), "bark_start": round(off - a / F.SR, 3),
+                "bark_end": round(off - a / F.SR + r["duration"], 3), "peak_dbfs": round(20 * np.log10(peak + 1e-9), 1),
+                "spec": {"width": img.shape[1], "height": img.shape[0],
+                         "data": base64.b64encode(img[::-1].tobytes()).decode()}}
+
     _disc = {"t": 0.0, "v": None}
 
     @app.get("/api/dogs/discovered")
@@ -641,8 +766,9 @@ def create_app(bark: BarkApp) -> FastAPI:
     def add_dog(body: DogIn):
         try:
             _check_size(body.size)
-            return store.add_dog(body.name or "", body.color, body.notes or "", body.owner or "",
-                                 body.address or "", body.description or "", body.size or "")
+            d = store.add_dog(body.name or "", body.color, body.notes or "", body.owner or "",
+                              body.address or "", body.description or "", body.size or "")
+            return store.update_dog(d["id"], breed=body.breed) if body.breed else d
         except Exception as e:  # noqa: BLE001
             raise HTTPException(400, str(e))
 
@@ -724,6 +850,9 @@ def create_app(bark: BarkApp) -> FastAPI:
         """A new theme of yours (from the editor, a duplicate, or an uploaded file)."""
         try:
             t = TH.save(cfg, body)
+            src = body.get("copy_pictures_from")            # duplicating a theme copies its pictures too
+            if src and TH.picture_count(cfg, src):
+                TH.copy_pictures(cfg, t["id"], TH.pictures(cfg, src))
             if body.get("activate", True):
                 TH.set_active(cfg, store, t["id"])
         except ValueError as e:
@@ -746,12 +875,44 @@ def create_app(bark: BarkApp) -> FastAPI:
             raise HTTPException(400, str(e))
         return themes_view()
 
+    @app.get("/api/themes/{tid}.zip")
+    def download_theme_pack(tid: str):
+        t = TH.find(cfg, tid)
+        if not t:
+            raise HTTPException(404)
+        return Response(TH.export_zip(cfg, t), media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="barktracker-theme-{tid}.zip"'})
+
+    @app.put("/api/theme-pack")
+    async def upload_theme(request: Request):
+        data = await request.body()
+        try:
+            t = TH.import_pack(cfg, data)
+            TH.set_active(cfg, store, t["id"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return themes_view()
+
     @app.get("/api/themes/{tid}.json")
     def download_theme(tid: str):
         t = TH.find(cfg, tid)
         if not t:
             raise HTTPException(404)
         return JSONResponse(TH.export(t), headers={"Content-Disposition": f'attachment; filename="barktracker-theme-{tid}.json"'})
+
+    # ---- advanced (debug) settings ------------------------------------------------
+    from . import advanced as ADV
+
+    @app.get("/api/advanced")
+    def get_advanced():
+        return ADV.view(store)
+
+    @app.put("/api/advanced")
+    def put_advanced(body: dict = Body(...)):
+        try:
+            return ADV.reset(store) if body.get("reset") else ADV.update(store, body.get("values") or {})
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     # ---- alerts to other apps ----------------------------------------------------
     @app.get("/api/alerts")
@@ -1082,11 +1243,11 @@ def create_app(bark: BarkApp) -> FastAPI:
                     peak = det.eq.copy() if peak is None else np.maximum(peak, det.eq)
                 barking = det is not None and livemode.is_barking(det)
                 now = time.monotonic()
-                if now - last_send >= (LIVE_FAST if barking else LIVE_SLOW) or sent == 0:
+                if now - last_send >= (_mod.LIVE_FAST if barking else _mod.LIVE_SLOW) or sent == 0:
                     snap = livemode.snapshot(det, bark.error)
                     if peak is not None and snap["bands"]:
                         snap["bands"] = [round(float(v), 2) for v in peak]
-                    snap["interval"] = LIVE_FAST if snap["mode"] == "bark" else LIVE_SLOW
+                    snap["interval"] = _mod.LIVE_FAST if snap["mode"] == "bark" else _mod.LIVE_SLOW
                     yield f"data: {json.dumps(snap, separators=(',', ':'))}\n\n"
                     sent, last_send, peak = sent + 1, now, None
                 await asyncio.sleep(0.05)
@@ -1098,12 +1259,27 @@ def create_app(bark: BarkApp) -> FastAPI:
             raise HTTPException(404)
         return cfg.media_path / kind
 
+    def picture_source() -> tuple[str, dict | None]:
+        """Where the live band's pictures come from: the active theme (when it has its own), your
+        own folder (when it has any), or the built-in drawings."""
+        t = TH.active(cfg, store)
+        if not t["builtin"] and TH.picture_count(cfg, t["id"]):
+            return "theme", t
+        return "own", None
+
     def list_media(kind: str) -> list[dict]:
+        src, t = picture_source()
+        if src == "theme":
+            files = TH.pictures(cfg, t["id"])[kind]
+            if files:
+                return [{"url": f"/media/theme/{t['id']}/{kind}/{p.name}", "name": p.name, "own": True, "folder": kind,
+                         "video": p.suffix.lower() in VIDEO} for p in files]
+
         def own_files(k):
             d = cfg.media_path / k
             return [p for p in sorted(d.glob("*")) if p.suffix.lower() in MEDIA_TYPES and p.is_file()] if d.exists() else []
         own = own_files(kind) + (own_files("idle") if kind == "quiet" else [])   # older installs used idle/
-        if own:
+        if own and src != "theme":
             return [{"url": f"/media/{p.parent.name}/{p.name}", "name": p.name, "own": True, "folder": p.parent.name,
                      "video": p.suffix.lower() in VIDEO} for p in own]
         builtin = sorted((STATIC / "media" / kind).glob("*"))
@@ -1112,7 +1288,19 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     @app.get("/api/media")
     def media():
-        return {**{k: list_media(k) for k in ("quiet", "active", "bark")}, "folder": str(cfg.media_path)}
+        src, t = picture_source()
+        return {**{k: list_media(k) for k in ("quiet", "active", "bark")}, "folder": str(cfg.media_path),
+                "source": src, "theme": t["name"] if t else None,
+                "theme_folder": str(TH.media_dir(cfg, t["id"])) if t else None}
+
+    @app.get("/media/theme/{tid}/{kind}/{name}")
+    def theme_media_file(tid: str, kind: str, name: str):
+        if kind not in MEDIA_KINDS:
+            raise HTTPException(404)
+        p = next((x for x in TH.pictures(cfg, tid)[kind] if x.name == name), None)
+        if p is None:
+            raise HTTPException(404)
+        return FileResponse(p, media_type=MEDIA_TYPES[p.suffix.lower()])
 
     @app.get("/media/{kind}/{name}")
     def media_file(kind: str, name: str):
@@ -1122,27 +1310,54 @@ def create_app(bark: BarkApp) -> FastAPI:
             raise HTTPException(404)
         return FileResponse(p, media_type=MEDIA_TYPES[p.suffix.lower()])
 
+    def upload_dir(kind: str) -> Path:
+        src, t = picture_source()
+        return TH.media_dir(cfg, t["id"]) / kind if src == "theme" else media_dir(kind)
+
     @app.put("/api/media/{kind}/{name}")
     async def upload_media(kind: str, name: str, request: Request):
+        """Adds to the pictures you're looking at: the active theme's own, or your own folder."""
         safe = "".join(c for c in Path(name).name if c.isalnum() or c in "._- ").strip()
         if not safe or Path(safe).suffix.lower() not in MEDIA_TYPES:
             raise HTTPException(400, "Use a JPG, PNG, GIF, WebP, SVG, MP4 or WebM file")
         body = await request.body()
         if len(body) > 40 * 2**20:
             raise HTTPException(413, "Files must be under 40 MB")
-        d = media_dir(kind)
+        media_dir(kind)
+        d = upload_dir(kind)
         d.mkdir(parents=True, exist_ok=True)
         (d / safe).write_bytes(body)
         return media()
 
     @app.delete("/api/media/{kind}/{name}")
     def delete_media(kind: str, name: str):
-        base = (cfg.media_path / "idle") if kind == "idle" else media_dir(kind)
+        base = (cfg.media_path / "idle") if kind == "idle" else upload_dir(kind)
         p = (base / name).resolve()
         if p.parent != base.resolve() or not p.is_file():
             raise HTTPException(404)
         p.unlink()
         return media()
+
+    @app.post("/api/themes/{tid}/pictures")
+    def theme_pictures(tid: str, body: dict = Body(default={})):
+        """copy: put the pictures the live band shows now into this theme; clear: remove them."""
+        try:
+            if body.get("clear"):
+                TH.clear_pictures(cfg, tid)
+            else:
+                def path_of(url: str) -> Path:
+                    parts = url.strip("/").split("/")
+                    if parts[0] == "static":                       # static/media/<kind>/<name>
+                        return STATIC / "media" / parts[2] / parts[3]
+                    if parts[1] == "theme":                        # media/theme/<tid>/<kind>/<name>
+                        return TH.media_dir(cfg, parts[2]) / parts[3] / parts[4]
+                    return cfg.media_path / parts[1] / parts[2]    # media/<folder>/<name>
+                src = {k: [path_of(i["url"]) for i in list_media(k)] for k in MEDIA_KINDS}
+                src = {k: [p for p in v if p.is_file()] for k, v in src.items()}
+                TH.copy_pictures(cfg, tid, src)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return themes_view()
 
     # ---- ordinance & complaint reports ----------------------------------------
     @app.get("/api/ordinance")

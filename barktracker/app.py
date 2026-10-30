@@ -30,6 +30,8 @@ class BarkApp:
         if restored:
             self.store.set_meta("last_restore", restored)
         self.defaults = settings_mod.apply_saved(cfg, self.store)   # dashboard overrides
+        from . import advanced
+        advanced.apply_saved(self.store)                             # Settings > Advanced
         self._keep_ordinance()
         self.backup = backup_mod.Backup(cfg, self.store, getattr(cfg, "source_file", None))
         from . import tuning
@@ -69,6 +71,7 @@ class BarkApp:
         if start_detector:          # only the running service prunes clips and backs up (not one-off commands)
             self._spawn(self._maintenance_loop, "maintenance")
             self._spawn(self._backup_loop, "backup")
+            self._spawn(self._alert_loop, "alerts")
             self.array.start()
 
     def _keep_ordinance(self) -> None:
@@ -244,6 +247,21 @@ class BarkApp:
                 except Exception:  # noqa: BLE001
                     log.exception("Re-matching failed")
             self.stop.wait(3600)
+
+    def _alert_loop(self):
+        """Alerts that aren't about a finished clip: still barking after N minutes, daily and
+        weekly summaries."""
+        from . import alerts
+        sent: set = set()
+        while not self.stop.wait(15):
+            try:
+                det = self.detector
+                alerts.check_ongoing(self.store, self.cfg, det.ep if det else None, sent)
+                alerts.check_scheduled(self.store, self.cfg)
+                if len(sent) > 500:
+                    sent.clear()
+            except Exception:  # noqa: BLE001
+                log.exception("Alert check failed")
 
     def _backup_loop(self):
         self.stop.wait(60)                     # let startup (and a restore's re-scan) settle first

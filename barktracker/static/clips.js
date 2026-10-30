@@ -24,11 +24,11 @@ async function renderClips() {
   const f = S.clipFilters, openId = route.arg ? Number(route.arg) : null;
   const qs = new URLSearchParams({ limit: 30, offset: f.offset || 0, include_fp: !f.hideNb });
   if (f.dog) qs.set("dog", f.dog);
+  if (f.tag) qs.set("tag", f.tag);
   if (f.min) qs.set("min_duration", f.min);
   const [r, nb] = await Promise.all([api(`/api/episodes?${qs}`), api("/api/not-bark")]);
   if (route.name !== "clips") return;
-  let items = r.items;
-  if (f.tag) items = items.filter((e) => (e.false_positive ? "nb" : e.tag) === f.tag);
+  const items = r.items;
   try { localStorage.setItem("bt.clipsSeen", String(Date.now() / 1000)); } catch (_) { /* private mode */ }
   const opts = Object.values(S.dogs).map((d) => `<option value="${d.id}" ${f.dog == d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("");
   view.innerHTML = `
@@ -41,7 +41,7 @@ async function renderClips() {
           ${Object.entries(TAGS).map(([k, [t]]) => `<option value="${k}" ${f.tag === k ? "selected" : ""}>${t}</option>`).join("")}
           ${f.hideNb ? "" : `<option value="nb" ${f.tag === "nb" ? "selected" : ""}>Not a bark</option>`}</select>
         <label class="row" style="gap:6px">At least <input type="number" id="fMin" min="0" step="5" value="${f.min || 0}" style="width:5em"> s</label>
-        <span class="muted small" style="margin-left:auto">${r.total} clip${r.total === 1 ? "" : "s"}${f.tag ? ` (status filter applies to this page)` : ""}</span>
+        <span class="muted small" style="margin-left:auto">${r.total} clip${r.total === 1 ? "" : "s"}</span>
       </div>
       ${!f.hideNb && nb.with_audio ? `<div class="notice nb small">Clips marked “Not a bark” teach the Pi to ignore similar sounds${nb.filter_active ? " (it's doing so now)" : ""}. Their audio isn't needed for that. <button class="btn" id="nbBulk">Delete audio of all ${nb.with_audio} (${nb.audio_mb} MB)</button></div>` : ""}
       <div class="list cliplist" id="clipList">${items.length ? items.map(clipRow).join("") : `<div class="empty"><strong>No clips match</strong>${r.total ? "Try another filter." : "When the Pi hears barking it saves a clip here."}</div>`}</div>
@@ -55,7 +55,7 @@ async function renderClips() {
   const reload = () => { f.offset = 0; location.hash = "#/clips"; renderClips(); };
   $("#fHideNb").onchange = (e) => { f.hideNb = e.target.checked; if (f.hideNb && f.tag === "nb") f.tag = ""; try { localStorage.setItem("bt.hideNb", f.hideNb ? "1" : "0"); } catch (_) { /* */ } reload(); };
   $("#fDog").onchange = (e) => { f.dog = e.target.value; reload(); };
-  $("#fTag").onchange = (e) => { f.tag = e.target.value; renderClips(); };
+  $("#fTag").onchange = (e) => { f.tag = e.target.value; reload(); };
   $("#fMin").onchange = (e) => { f.min = Number(e.target.value) || 0; reload(); };
   $("#pPrev").onclick = () => { f.offset = Math.max(0, (f.offset || 0) - 30); location.hash = "#/clips"; renderClips(); };
   $("#pNext").onclick = () => { f.offset = (f.offset || 0) + 30; location.hash = "#/clips"; renderClips(); };

@@ -41,6 +41,8 @@ SCAN_WINDOW = 0.12               # seconds of audio per live scan
 SCAN_LAG = 0.3                   # scan this far behind real time, so both streams have arrived
 SCAN_MIN_RISE = 8.0              # dB over the background before a scan is worth showing (quiet-room
                                  # electrical noise on the AIY HAT correlates at 3-5 dB and lights every wedge)
+SCAN_MIN_CLARITY = 4.0           # live scans need a correlation peak this clear
+VALID_CLARITY = 4.0              # a sound's direction counts as clear (charts, dogs, matching) from here
 WATCH_SECONDS = 6.0              # keep scanning this long after the last feed request
 
 
@@ -329,7 +331,7 @@ class ArrayMonitor:
             return None
         rise = max(m["level_a"], m["level_b"]) - (floor if floor is not None else -70.0)
         self.scan_note = f"rise {rise:.1f} dB, clarity {m['sharp']:.1f}"
-        if rise < SCAN_MIN_RISE or m["sharp"] < 4.0 or not m["ok"]:
+        if rise < SCAN_MIN_RISE or m["sharp"] < SCAN_MIN_CLARITY or not m["ok"]:
             return None
         row = [round(t1, 2), round(m["angle"], 1), round(rise, 1), bool(det is not None and det.ep is not None)]
         self.scans.append(row)
@@ -419,7 +421,7 @@ class ArrayMonitor:
         mode, sharp, la, lb = m["mode"], m["sharp"], m["level_a"], m["level_b"]
         self.seq += 1
         out = {"n": self.seq, "id": ev["id"], "ts": ev["ts"], "kind": ev["kind"], "prob": ev.get("prob"),
-               "angle": round(m["angle"], 1), "valid": bool(m["ok"] and sharp >= 4.0), "sharp": round(sharp, 1),
+               "angle": round(m["angle"], 1), "valid": bool(m["ok"] and sharp >= VALID_CLARITY), "sharp": round(sharp, 1),
                "tau_us": round(m["tau"] * 1e6, 1), "raw_us": round(m["raw"] * 1e6, 1),
                "level_a": round(la, 1), "level_b": round(lb, 1), "ild_db": round(la - lb, 1), "mode": mode,
                "rise": ev.get("rise"), "peak": ev.get("peak"), "dog": ev.get("dog")}

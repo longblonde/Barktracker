@@ -22,12 +22,15 @@ log = logging.getLogger(__name__)
 
 META = "alerts"
 KINDS = {"webhook": "Webhook (JSON)", "ntfy": "ntfy", "discord": "Discord", "slack": "Slack"}
-WHEN = {"episode": "Every episode", "criteria": "Only when it meets a report rule"}
+WHEN = {"episode": "When a clip ends", "criteria": "When a clip ends and meets a report rule",
+        "ongoing": "While barking, after a while", "daily": "Daily summary", "weekly": "Weekly summary"}
+WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
 def _blank(**kw) -> dict:
     d = {"id": secrets.token_hex(4), "name": "", "kind": "webhook", "url": "", "enabled": True,
-         "when": "episode", "min_seconds": 30.0, "quiet_hours_only": False, "dogs": []}
+         "when": "episode", "min_seconds": 30.0, "quiet_hours_only": False, "dogs": [],
+         "minutes": 5.0, "at": "08:00", "weekday": 0}
     d.update(kw)
     return d
 
@@ -58,6 +61,15 @@ def clean(item: dict) -> dict:
     if d["when"] not in WHEN:
         raise ValueError("Unknown alert condition")
     d["min_seconds"] = max(0.0, float(d["min_seconds"] or 0))
+    d["minutes"] = max(0.5, float(d["minutes"] or 5))
+    try:
+        hh, mm = str(d["at"]).split(":")
+        d["at"] = f"{int(hh):02d}:{int(mm):02d}"
+        if not (0 <= int(hh) < 24 and 0 <= int(mm) < 60):
+            raise ValueError
+    except ValueError:
+        raise ValueError("The time looks like 08:00") from None
+    d["weekday"] = int(d["weekday"]) % 7
     d["enabled"] = bool(d["enabled"])
     d["quiet_hours_only"] = bool(d["quiet_hours_only"])
     d["dogs"] = [int(x) for x in (d["dogs"] or [])]
@@ -80,7 +92,7 @@ def message(ep: dict, dog_names: dict[str, str]) -> tuple[str, dict]:
 
 
 def matches(item: dict, ep: dict, ctx: dict) -> bool:
-    if not item.get("enabled", True):
+    if not item.get("enabled", True) or item.get("when", "episode") not in ("episode", "criteria"):
         return False
     if ep["duration"] < item.get("min_seconds", 0):
         return False
@@ -133,7 +145,7 @@ def dispatch(store, cfg, ep: dict, ctx: dict) -> int:
 
 def _record(store, aid: str, error: str | None) -> None:
     st = store.get_meta("alerts_status") or {}
-    st[aid] = {"ts": time.time(), "error": error}
+    st[aid] = {**(st.get(aid) or {}), "ts": time.time(), "error": error}
     store.set_meta("alerts_status", st)
 
 
@@ -146,3 +158,120 @@ def test(item: dict) -> None:
     item = clean(item)
     send(item, {"test": True, "duration": 42, "barks": 17, "dogs": {"Rex": 17}},
          "Test from BarkTracker: barking for 42 s (17 barks): Rex")
+
+
+# ---- alerts that aren't about a finished clip -------------------------------------------------------
+def _dogs_ok(item: dict, dogs: dict) -> bool:
+    want = {str(x) for x in item.get("dogs") or []}
+    return not want or bool(want & set(dogs.keys()))
+
+
+def _fire(store, items: list[dict], payload: dict, text: str, title: str) -> None:
+    def go():
+        for i in items:
+            try:
+                send(i, payload, text, title)
+                _record(store, i["id"], None)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Alert %s failed: %s", i.get("name"), e)
+                _record(store, i["id"], f"{type(e).__name__}: {e}")
+    threading.Thread(target=go, name="alerts", daemon=True).start()
+
+
+def check_ongoing(store, cfg, ep, sent: set, now: float | None = None) -> int:
+    """"Still barking after N minutes": once per clip and destination, while the clip is open."""
+    if ep is None:
+        return 0
+    now = now or time.time()
+    mins = (now - ep.start_ts) / 60
+    dogs = {str(k): v for k, v in (ep.dogs or {}).items() if k not in (0, "0")}
+    items = [i for i in load(store, cfg) if i.get("enabled") and i.get("when") == "ongoing"
+             and mins >= i["minutes"] and (i["id"], ep.id) not in sent and _dogs_ok(i, dogs)]
+    if items:
+        from . import ordinance as O
+        if any(i.get("quiet_hours_only") for i in items):
+            quiet = O.in_quiet_hours(now, O.get_ordinance(store)["thresholds"], O.Clock(cfg.timezone))
+            items = [i for i in items if quiet or not i.get("quiet_hours_only")]
+    for i in items:
+        sent.add((i["id"], ep.id))
+    if not items:
+        return 0
+    names = {str(d["id"]): d["name"] for d in store.dogs()}
+    who = [names.get(k, "Unidentified" if k in ("u", "None") else "unknown") for k in dogs]
+    text = f"Still barking: {mins:.0f} min so far ({ep.barks} barks)" + (f": {', '.join(who)}" if who else "")
+    _fire(store, items, {"episode_id": ep.id, "start_ts": ep.start_ts, "minutes": round(mins, 1),
+                         "barks": ep.barks, "dogs": who, "ongoing": True}, text, "BarkTracker: still barking")
+    return len(items)
+
+
+def summary(store, cfg, t0: float, t1: float, dogs: list[int] | None = None) -> tuple[str, dict]:
+    """Plain-language summary of barking between t0 and t1 (optionally only some dogs)."""
+    from . import ordinance as O
+    want = {int(x) for x in dogs or []}
+    names = {d["id"]: d["name"] for d in store.dogs()}
+    eps = store.episodes_between(t0, t1)
+    per: dict = {}
+    for r in store.bark_dogs_between(t0, t1):
+        if r["dog_id"] == 0:
+            continue
+        per.setdefault(r["episode_id"], {})[r["dog_id"]] = per.get(r["episode_id"], {}).get(r["dog_id"], 0) + r["n"]
+    total, longest, by_dog, n = 0.0, 0.0, {}, 0
+    keep = []
+    for e in eps:
+        split = per.get(e["id"], {})
+        tot = sum(split.values()) or 1
+        share = sum(v for k, v in split.items() if k in want) / tot if want else 1.0
+        if share <= 0:
+            continue
+        dur = max(0.0, e["end_ts"] - e["start_ts"]) * share
+        n += 1
+        total += dur
+        longest = max(longest, dur)
+        keep.append({**e, "subject_barks": e["bark_count"]})
+        for k, v in split.items():
+            if not want or k in want:
+                nm = names.get(k, "Unidentified")
+                by_dog[nm] = by_dog.get(nm, 0.0) + dur * v / tot
+    o = O.get_ordinance(store)
+    incs = O.build_incidents(keep, o["thresholds"], O.Clock(cfg.timezone), o["rules"])
+    hits = sum(1 for i in incs if i["flags"])
+    fmt = O.fmt_dur
+    if not n:
+        text = "No barking."
+    else:
+        text = (f"{fmt(total)} of barking in {n} clip{'s' if n != 1 else ''}, longest {fmt(longest)}."
+                + (f" {hits} incident{'s' if hits != 1 else ''} met your report rules." if hits else "")
+                + (" " + ", ".join(f"{k} {fmt(v)}" for k, v in sorted(by_dog.items(), key=lambda x: -x[1])[:5]) + "."
+                   if by_dog else ""))
+    return text, {"clips": n, "seconds": round(total), "longest": round(longest), "incidents_meeting_rules": hits,
+                  "by_dog": {k: round(v) for k, v in by_dog.items()}, "from": t0, "to": t1}
+
+
+def check_scheduled(store, cfg, now: float | None = None) -> int:
+    """Daily and weekly summaries, sent once each at their time (in the Pi's time zone)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = now or time.time()
+    tz = ZoneInfo(cfg.timezone) if cfg.timezone else None
+    dt = datetime.fromtimestamp(now, tz) if tz else datetime.fromtimestamp(now)
+    st = status(store)
+    fired = 0
+    for i in load(store, cfg):
+        if not i.get("enabled") or i.get("when") not in ("daily", "weekly"):
+            continue
+        hh, mm = (int(x) for x in i["at"].split(":"))
+        if (dt.hour, dt.minute) < (hh, mm) or dt.hour * 60 + dt.minute - (hh * 60 + mm) > 120:
+            continue                     # only in the two hours after the set time (a Pi that was off skips it)
+        weekly = i["when"] == "weekly"
+        if weekly and dt.weekday() != i["weekday"]:
+            continue
+        period = dt.date().isoformat()
+        if (st.get(i["id"]) or {}).get("period") == period:
+            continue
+        days = 7 if weekly else 1
+        text, data = summary(store, cfg, now - days * 86400, now, i.get("dogs"))
+        title = f"BarkTracker: last {'7 days' if weekly else '24 hours'}"
+        store.set_meta("alerts_status", {**status(store), i["id"]: {**(status(store).get(i["id"]) or {}), "period": period}})
+        _fire(store, [i], {**data, "summary": True, "period": "week" if weekly else "day"}, text, title)
+        fired += 1
+    return fired

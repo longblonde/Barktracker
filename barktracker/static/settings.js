@@ -4,27 +4,52 @@
 // adjusting detection levels happens on the Detection and tuning page.
 
 const SETTINGS_SECTIONS = [["mic", "Microphone and detection"], ["storage", "Storage and backup"], ["band", "Live band and dashboard"],
-  ["alerts", "Alerts"], ["theme", "Theme"], ["system", "System"]];
+  ["alerts", "Alerts"], ["theme", "Theme"], ["system", "System"], ["advanced", "Advanced (debug)"]];
 
 async function renderSettings() {
   const [st, media] = await Promise.all([api("/api/settings"), api("/api/media")]);
   if (route.name !== "settings") return;
   S.values = st.values;
+  const card = (id, title, inner) => `<details class="panel card" id="card-${id}" data-card="${id}">
+      <summary><h2>${title}</h2><span class="small muted card-sum" id="sum-${id}"></span></summary>
+      <div class="card-body">${inner}</div></details>`;
   view.innerHTML = `
-    <section><h1>Settings</h1><p class="sub">Changes take effect right away and are kept on this Pi.</p></section>
-    <nav class="subnav" aria-label="Settings sections">${SETTINGS_SECTIONS.map(([id, t]) => `<a href="#/settings/${id}" data-sec="${id}">${t}</a>`).join("")}</nav>
-    <div class="settings-sec" id="sec-mic"></div>
-    <div class="settings-sec" id="sec-storagewrap"><div id="sec-storage"></div><div id="sec-backup"></div></div>
-    <div class="settings-sec" id="sec-band"></div>
-    <div class="settings-sec" id="sec-alerts"></div>
-    <div class="settings-sec" id="sec-theme"></div>
-    <div class="settings-sec" id="sec-system"></div>
+    <section><h1>Settings</h1><p class="sub">Changes take effect right away and are kept on this Pi. Open a section to change it.</p></section>
+    <div class="row cards-ctl"><button type="button" class="linkish small" id="openAll">Open all</button><button type="button" class="linkish small" id="closeAll">Close all</button></div>
+    <div class="cards">
+      ${card("mic", "Microphone and detection", `<div id="sec-mic" class="solo"></div>`)}
+      ${card("storage", "Storage and backup", `<div id="sec-storage"></div><div id="sec-backup"></div>`)}
+      ${card("band", "Live band and dashboard", `<div id="sec-band" class="solo"></div>`)}
+      ${card("alerts", "Alerts", `<div id="sec-alerts" class="solo"></div>`)}
+      ${card("theme", "Theme", `<div id="sec-theme" class="solo"></div>`)}
+      ${card("system", "System", `<div id="sec-system" class="solo"></div>`)}
+      ${card("advanced", "Advanced (debug)", `<div id="sec-advanced" class="solo"></div>`)}
+    </div>
     <footer class="version">BarkTracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
-  drawMic(st); drawStorage(st); drawBackup(); drawPictures(media); drawAlerts(); drawTheme(); drawSystem();
-  view.querySelectorAll("[data-sec]").forEach((a) => a.onclick = (e) => { e.preventDefault(); history.replaceState(null, "", a.getAttribute("href")); scrollToSec(a.dataset.sec); });
-  if (route.arg) setTimeout(() => scrollToSec(route.arg), 50);
+  drawMic(st); drawStorage(st); drawBackup(); drawPictures(media); drawAlerts(); drawTheme(); drawSystem(); drawAdvanced();
+  sumMic(st); sumStorage(st); sumBand(media);
+  view.querySelectorAll("details.card").forEach((d) => d.addEventListener("toggle", () => {
+    if (d.open) history.replaceState(null, "", `#/settings/${d.dataset.card}`);
+  }));
+  $("#openAll").onclick = () => view.querySelectorAll("details.card").forEach((d) => { d.open = true; });
+  $("#closeAll").onclick = () => view.querySelectorAll("details.card").forEach((d) => { d.open = false; });
+  if (route.arg) openCard(route.arg);
 }
-function scrollToSec(id) { (id === "storage" ? $("#sec-storagewrap") : $(`#sec-${id}`))?.scrollIntoView({ behavior: "smooth", block: "start" }); }
+function openCard(id) {
+  const d = $(`#card-${id}`); if (!d) return;
+  d.open = true;
+  setTimeout(() => d.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
+}
+function setSum(id, text) { const el = $(`#sum-${id}`); if (el) el.textContent = text; }
+function sumMic(st) {
+  const v = st.values, mode = !v["direction.enabled"] ? "mixed to mono" : v["direction.mode"] === "pair" ? `two microphones, ${v["direction.spacing_cm"]} cm` : `stereo, ${v["direction.spacing_cm"]} cm`;
+  setSum("mic", `${st.info.audio_device ? st.info.audio_device.split(":")[0].split("(")[0].trim() : "no microphone"} · ${mode}`);
+}
+function sumStorage(st) {
+  const d = st.disk, gb = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+  setSum("storage", `${gb(d.clips_mb)} of clips · ${gb(d.free_mb)} free${st.values["backup.path"] ? " · backing up to USB" : " · no backup drive"}`);
+}
+function sumBand(m) { setSum("band", m.source === "theme" ? `pictures from the theme “${m.theme}”` : m.quiet?.[0]?.own ? "your own pictures" : "built-in pictures"); }
 
 // ---- microphone and detection ------------------------------------------------------------
 function drawMic(st) {
@@ -46,7 +71,7 @@ function drawMic(st) {
       <label class="check"><input type="checkbox" name="direction.swap" ${v["direction.swap"] ? "checked" : ""}> Mic A is on the other side <span class="help">Tick if sounds from the left land near 180°.</span></label>
     </div>
     <h3>Detection</h3>
-    <p class="small muted intro">The loudness trigger (${v["detection.trigger_db"]} dB over the background), the quietest sound checked (${v["detection.min_level_dbfs"]} dBFS) and the bark confidence (${Math.round(v["detection.bark_threshold"] * 100)}%) are set on <a href="#/tune">Detection and tuning</a>, where you can see what they'd catch.</p>
+    <p class="small muted intro">The loudness trigger, the quietest sound checked and the bark confidence are set on <a href="#/tune">Detection and tuning</a>, where you can see what they catch.</p>
     <div class="grid3">
       ${fieldNum("audio.gain_db", "Microphone boost", v["audio.gain_db"], { unit: "dB", min: -12, max: 30, help: "Webcams adjust their own gain; leave at 0 unless barks look quiet." })}
       ${fieldNum("detection.episode_gap", "Quiet time that ends a clip", v["detection.episode_gap"], { unit: "seconds", min: 1, max: 120, step: 0.5 })}
@@ -81,7 +106,7 @@ function drawMic(st) {
       if (inp.name === "chmode" || inp.name === "direction.device" && m !== "pair") continue;
       vals[inp.name] = inp.type === "checkbox" ? inp.checked : inp.value;
     }
-    try { await saveApp(vals, m === "mono" ? "Saved: mixing to mono" : "Saved: direction is on; see Detection and tuning"); }
+    try { const st2 = await saveApp(vals, m === "mono" ? "Saved: mixing to mono" : "Saved: direction is on; see Detection and tuning"); sumMic({ ...st, values: st2.values }); }
     catch (e) { toast(e.message); }
   };
   $("#resetApp").onclick = async () => {
@@ -98,11 +123,12 @@ async function drawAlerts() {
   let r;
   try { [r] = await Promise.all([api("/api/alerts"), loadDogs()]); } catch (e) { el.innerHTML = `<div class="panel"><h2>Alerts</h2><p class="notice err">${esc(e.message)}</p></div>`; return; }
   const items = r.items.map((i) => ({ ...i, dogs: [...i.dogs] }));
+  setSum("alerts", items.length ? `${items.filter((i) => i.enabled).length} of ${items.length} on` : "none set up");
   const PH = { webhook: "https://example.com/hook", ntfy: "https://ntfy.sh/your-topic", discord: "https://discord.com/api/webhooks/…", slack: "https://hooks.slack.com/services/…" };
   const draw = () => {
     el.innerHTML = `<div class="panel form">
       <h2>Alerts</h2>
-      <p class="small muted intro">Send a message to your phone or another app when barking ends. Each destination has its own conditions. ntfy is the easiest for phone notifications; a plain webhook works with Home Assistant and Node-RED.</p>
+      <p class="small muted intro">Like alarms on a phone: add as many as you like. Each one goes to one place (ntfy is the easiest for phone notifications; a plain webhook works with Home Assistant and Node-RED) when its condition is met: a clip ends, barking has gone on for a while, or a daily or weekly summary.</p>
       <div class="alerts">${items.map((a, i) => {
         const s = r.status[a.id];
         return `<div class="alert ${a.enabled ? "" : "off"}" data-i="${i}">
@@ -116,20 +142,24 @@ async function drawAlerts() {
           </div>
           <div class="alert-cond">
             <select data-k="when" aria-label="When">${Object.entries(r.when).map(([k, t]) => `<option value="${k}" ${a.when === k ? "selected" : ""}>${t}</option>`).join("")}</select>
-            <label class="unit">lasting at least <input type="number" data-k="min_seconds" value="${a.min_seconds}" min="0" step="5"> s</label>
-            <label class="check"><input type="checkbox" data-k="quiet_hours_only" ${a.quiet_hours_only ? "checked" : ""}> only in quiet hours</label>
+            ${a.when === "episode" || a.when === "criteria" ? `<label class="unit">lasting at least <input type="number" data-k="min_seconds" value="${a.min_seconds}" min="0" step="5"> s</label>` : ""}
+            ${a.when === "ongoing" ? `<label class="unit">once barking has gone on for <input type="number" data-k="minutes" value="${a.minutes}" min="0.5" step="0.5"> min</label>` : ""}
+            ${a.when === "weekly" ? `<label class="unit">on <select data-k="weekday">${["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d, i) => `<option value="${i}" ${a.weekday === i ? "selected" : ""}>${d}</option>`).join("")}</select></label>` : ""}
+            ${a.when === "daily" || a.when === "weekly" ? `<label class="unit">at <input type="time" data-k="at" value="${a.at}"></label><span class="small muted">covering the last ${a.when === "weekly" ? "7 days" : "24 hours"}</span>` : ""}
+            ${a.when === "daily" || a.when === "weekly" ? "" : `<label class="check"><input type="checkbox" data-k="quiet_hours_only" ${a.quiet_hours_only ? "checked" : ""}> only in quiet hours</label>`}
             ${Object.values(S.dogs).length ? `<span class="alert-dogs"><span class="small muted">Dogs:</span> ${Object.values(S.dogs).map((d) => `<button type="button" class="chip" data-dog="${d.id}" style="--c:${d.color}" aria-pressed="${a.dogs.includes(d.id)}"><i></i>${esc(d.name)}</button>`).join("")}<span class="small muted">${a.dogs.length ? "" : "(any)"}</span></span>` : ""}
           </div>
           ${s ? `<p class="small ${s.error ? "bad" : "muted"}">${s.error ? `Last send failed ${fmtWhen(s.ts)}: ${esc(s.error)}` : `Last sent ${fmtWhen(s.ts)}`}</p>` : ""}
         </div>`;
       }).join("") || `<p class="small muted">No alerts yet.</p>`}</div>
-      <div class="row spread"><span class="row"><button type="button" class="btn" id="addAlert">+ Add a destination</button></span><button type="button" class="btn primary" id="saveAlerts">Save alerts</button></div>
+      <div class="row spread"><span class="row"><button type="button" class="btn" id="addAlert">+ Add an alert</button></span><button type="button" class="btn primary" id="saveAlerts">Save alerts</button></div>
     </div>`;
     el.querySelectorAll(".alert").forEach((row) => {
       const a = items[Number(row.dataset.i)];
       row.querySelectorAll("[data-k]").forEach((inp) => inp.onchange = inp.oninput = () => {
-        a[inp.dataset.k] = inp.type === "checkbox" ? inp.checked : inp.type === "number" ? Number(inp.value) : inp.value;
+        a[inp.dataset.k] = inp.type === "checkbox" ? inp.checked : inp.type === "number" || inp.dataset.k === "weekday" ? Number(inp.value) : inp.value;
         if (inp.dataset.k === "kind") row.querySelector(".alert-url").placeholder = PH[a.kind];
+        if (inp.dataset.k === "when" && inp.type !== "text") { draw(); return; }
         if (inp.dataset.k === "enabled") row.classList.toggle("off", !a.enabled);
       });
       row.querySelectorAll("[data-dog]").forEach((b) => b.onclick = () => {
@@ -141,7 +171,7 @@ async function drawAlerts() {
         try { await api("/api/alerts/test", { method: "POST", body: a }); toast(`Sent a test to ${a.name || "it"}`); } catch (e) { toast(e.message); }
       };
     });
-    $("#addAlert").onclick = () => { items.push({ name: "", kind: "ntfy", url: "", enabled: true, when: "episode", min_seconds: 30, quiet_hours_only: false, dogs: [] }); draw(); el.querySelector(".alert:last-child .alert-url")?.focus(); };
+    $("#addAlert").onclick = () => { items.push({ name: "", kind: "ntfy", url: "", enabled: true, when: "episode", min_seconds: 30, quiet_hours_only: false, dogs: [], minutes: 5, at: "08:00", weekday: 0 }); draw(); el.querySelector(".alert:last-child .alert-url")?.focus(); };
     $("#saveAlerts").onclick = async () => {
       try { r = await api("/api/alerts", { method: "PUT", body: { items } }); toast("Alerts saved"); drawAlerts(); } catch (e) { toast(e.message); }
     };
@@ -155,6 +185,7 @@ async function drawTheme() {
   let r;
   try { r = await api("/api/themes"); } catch (e) { el.innerHTML = `<div class="panel"><h2>Theme</h2><p class="notice err">${esc(e.message)}</p></div>`; return; }
   const act = r.theme, edit = JSON.parse(JSON.stringify(act));
+  setSum("theme", `${act.name}${act.pictures ? `, with ${act.pictures} pictures` : ""}`);
   let scheme = act.mode === "dark" ? "dark" : "light";
   const swatch = (t) => `<span class="sw" style="background:${t.colors.light.surface}"><i style="background:${t.colors.light.ink}"></i><i style="background:${t.colors.light.panel}"></i><i style="background:${t.alert_color}"></i><i style="background:${t.colors.dark.surface}"></i></span>`;
   const draw = () => {
@@ -164,8 +195,8 @@ async function drawTheme() {
       <div class="themes">${r.themes.map((t) => `<button type="button" class="theme-card" data-use="${t.id}" aria-pressed="${t.id === act.id}">${swatch(t)}<strong>${esc(t.name)}</strong><span class="small muted">${t.builtin ? "Built in" : "Yours"}${t.description ? ` · ${esc(t.description)}` : ""}</span></button>`).join("")}</div>
       <div class="row">
         <button type="button" class="btn" id="thDup">Duplicate “${esc(act.name)}”</button>
-        <a class="btn" href="/api/themes/${act.id}.json" download>Download</a>
-        <label class="btn upload">Upload a theme<input type="file" accept=".json,application/json" id="thUp" hidden></label>
+        <a class="btn" href="/api/themes/${act.id}.${act.pictures ? "zip" : "json"}" download>Download${act.pictures ? " (.zip with pictures)" : ""}</a>
+        <label class="btn upload">Upload a theme<input type="file" accept=".json,.zip,application/json,application/zip" id="thUp" hidden></label>
         ${act.builtin ? "" : `<button type="button" class="btn danger" id="thDel">Delete</button>`}
       </div>
       <h3>${act.builtin ? `${esc(act.name)} <span class="small muted">(built in: duplicate it to change these)</span>` : `Edit “${esc(act.name)}”`}</h3>
@@ -178,6 +209,9 @@ async function drawTheme() {
         <label class="colorpick">Barking alert<span class="unit"><input type="color" id="thAlert" value="${edit.alert_color}"> the live graph, bearing chart and browser-tab dog turn this color while a dog is barking</span></label>
         <div class="row"><span class="small muted">Colors for</span><span class="seg" role="radiogroup">${["light", "dark"].map((s) => `<button type="button" role="radio" data-scheme="${s}" aria-checked="${scheme === s}">${s === "light" ? "Light" : "Dark"}</button>`).join("")}</span></div>
         <div class="colorgrid">${Object.entries(r.color_keys).map(([k, t]) => `<label class="colorpick"><input type="color" data-color="${k}" value="${edit.colors[scheme][k]}"> ${esc(t)}</label>`).join("")}</div>
+        <h3>Live band pictures</h3>
+        <p class="small muted" style="margin:0">${act.pictures ? `This theme has its own ${act.pictures} pictures; the live band uses them while it's active. Add or remove them under Live band and dashboard.` : "This theme uses your own live band pictures (or the built-in drawings). Copy the ones showing now into the theme to make them part of it, so they travel with it when you share it."}</p>
+        <div class="row">${act.pictures ? `<button type="button" class="btn" id="thPicsClear">Remove the theme's pictures</button>` : `<button type="button" class="btn" id="thPicsCopy">Copy the current pictures into this theme</button>`}</div>
         <h3>Behavior</h3>
         <label class="check"><input type="checkbox" id="thWords" ${edit.behaviors.bark_words ? "checked" : ""}> ${esc(r.behaviors.bark_words)}</label>
         <label class="check"><input type="checkbox" id="thTab" ${edit.behaviors.tab_alert ? "checked" : ""}> ${esc(r.behaviors.tab_alert)}</label>
@@ -198,23 +232,29 @@ async function drawTheme() {
   };
   const after = async (res, msg) => {
     $("#themePreview")?.remove();
-    r = res; Theme.apply(res.theme); toast(msg); drawTheme();
+    r = res; Theme.apply(res.theme); toast(msg); drawTheme(); Beat.loadMedia(); refreshBand();
   };
   const wire = () => {
     el.querySelectorAll("[data-use]").forEach((b) => b.onclick = async () => after(await api("/api/themes/active", { method: "PUT", body: { id: b.dataset.use } }), "Theme changed"));
     el.querySelectorAll("[data-scheme]").forEach((b) => b.onclick = () => { scheme = b.dataset.scheme; draw(); });
     $("#thDup").onclick = async () => {
       const name = prompt("Name for your copy", `${act.name} (mine)`); if (!name) return;
-      try { after(await api("/api/themes", { method: "POST", body: { ...edit, name } }), `Made “${name}”: change it below`); } catch (e) { toast(e.message); }
+      try { after(await api("/api/themes", { method: "POST", body: { ...edit, name, copy_pictures_from: act.id } }), `Made “${name}”: change it below`); } catch (e) { toast(e.message); }
     };
     const del = $("#thDel");
     if (del) del.onclick = async () => { if (confirm(`Delete “${act.name}”?`)) after(await api(`/api/themes/${act.id}`, { method: "DELETE" }), "Theme deleted"); };
     $("#thUp").onchange = async (e) => {
       const f = e.target.files[0]; if (!f) return;
-      try { const t = JSON.parse(await f.text()); after(await api("/api/themes", { method: "POST", body: t }), `Added “${t.name}”`); }
-      catch (err) { toast(err instanceof SyntaxError ? "That file isn't a theme (not JSON)" : err.message); }
+      try {
+        const r2 = await fetch("/api/theme-pack", { method: "PUT", body: f, headers: { "Content-Type": "application/octet-stream" } });
+        if (!r2.ok) throw new Error((await r2.json().catch(() => ({}))).detail || r2.statusText);
+        const res = await r2.json(); after(res, `Added “${res.theme.name}”${res.theme.pictures ? ` with ${res.theme.pictures} pictures` : ""}`); Beat.loadMedia();
+      } catch (err) { toast(err.message); }
     };
     if (act.builtin) return;
+    const pc = $("#thPicsCopy"), px = $("#thPicsClear");
+    if (pc) pc.onclick = async () => { after(await api(`/api/themes/${act.id}/pictures`, { method: "POST", body: {} }), "Pictures copied into the theme"); Beat.loadMedia(); refreshBand(); };
+    if (px) px.onclick = async () => { if (!confirm("Remove this theme's own pictures?")) return; after(await api(`/api/themes/${act.id}/pictures`, { method: "POST", body: { clear: true } }), "Theme pictures removed"); Beat.loadMedia(); refreshBand(); };
     const on = (id, ev, fn) => { const x = $(id); if (x) x.addEventListener(ev, () => { fn(x); preview(); }); };
     on("#thName", "input", (x) => { edit.name = x.value; });
     on("#thMode", "change", (x) => { edit.mode = x.value; });
@@ -231,12 +271,45 @@ async function drawTheme() {
   draw();
 }
 
+async function refreshBand() { try { const m = await api("/api/media"); drawPictures(m); sumBand(m); } catch (_) { /* */ } }
+
+// ---- advanced (debug) ------------------------------------------------------------------------
+async function drawAdvanced() {
+  const el = $("#sec-advanced"); if (!el) return;
+  let r;
+  try { r = await api("/api/advanced"); } catch (e) { el.innerHTML = `<p class="notice err">${esc(e.message)}</p>`; return; }
+  const changed = r.items.filter((i) => i.changed).length;
+  setSum("advanced", changed ? `${changed} changed from the defaults` : "all defaults");
+  const shown = (i, v) => i.kind === "pct" ? Math.round(v * 1000) / 10 : v;
+  const groups = [...new Set(r.items.map((i) => i.group))];
+  el.innerHTML = `<form class="panel form" id="advForm">
+    <h2>Advanced (debug)</h2>
+    <p class="small muted intro">Numbers that are normally fixed in the code, for experimenting and diagnosing. They apply straight away. The defaults are what BarkTracker was tested with; changed values are marked.</p>
+    ${groups.map((g) => `<h3>${esc(g)}</h3><div class="adv-grid">${r.items.filter((i) => i.group === g).map((i) => `
+      <label class="${i.changed ? "adv-changed" : ""}">${esc(i.label)}
+        <span class="unit"><input type="number" name="${i.key}" value="${shown(i, i.value)}" step="any" min="${shown(i, i.lo)}" max="${shown(i, i.hi)}" data-kind="${i.kind}">${esc(i.unit)}</span>
+        <span class="help">${i.help ? esc(i.help) + " " : ""}Default ${shown(i, i.default)}${i.unit === "%" ? "%" : ""}.</span></label>`).join("")}</div>`).join("")}
+    <div class="row spread"><button class="btn primary" type="submit">Save</button><button type="button" class="btn" id="advReset">Back to the defaults</button></div>
+  </form>`;
+  $("#advForm").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const values = {};
+    for (const inp of ev.target.querySelectorAll("input[name]")) values[inp.name] = inp.dataset.kind === "pct" ? Number(inp.value) / 100 : Number(inp.value);
+    try { await api("/api/advanced", { method: "PUT", body: { values } }); toast("Advanced settings saved"); drawAdvanced(); } catch (e) { toast(e.message); }
+  };
+  $("#advReset").onclick = async () => {
+    if (!confirm("Put every advanced setting back to its default?")) return;
+    await api("/api/advanced", { method: "PUT", body: { reset: true } }); toast("Back to the defaults"); drawAdvanced();
+  };
+}
+
 // ---- system ----------------------------------------------------------------------------------
 async function drawSystem() {
   const el = $("#sec-system"); if (!el) return;
   let s;
   try { s = await api("/api/system"); } catch (e) { el.innerHTML = `<div class="panel"><h2>System</h2><p class="notice err">${esc(e.message)}</p></div>`; return; }
   const hw = s.hardware, p = hw.power, d = s.direction;
+  setSum("system", `${s.listening ? "listening" : "not listening"}${hw.temp_c != null ? ` · ${hw.temp_c} °C` : ""}${p && (p.under_voltage_now || p.under_voltage_since_boot) ? " · power warning" : ""} · ${s.clock?.ntp_synced ? "clock synced" : "clock not synced"}`);
   const warn = (c, t) => `<span class="${c ? "bad" : ""}">${t}</span>`;
   el.innerHTML = `<div class="panel form">
     <h2>System</h2>
@@ -507,6 +580,7 @@ function waitForRestart(restarting) {
       <label>Only when the sound model is at least<span class="unit"><input type="number" name="ui.sound_note_min" value="${Math.round(m.soundMin * 100)}" min="30" max="99" step="1" required>% sure</span></label>
       <button class="btn" type="submit">Save</button>
     </form>
+    ${m.source === "theme" ? `<p class="small notice">These pictures belong to the theme “${esc(m.theme)}”: adding or removing them here changes the theme. Switch to a theme without pictures to use your own folder again.</p>` : ""}
     <div class="three">
       ${col("quiet", "Napping", "Quiet hours, or a calm daytime (see above).")}
       ${col("active", "Sitting", "Daytime background noise, or louder sounds without barking.")}
@@ -536,7 +610,7 @@ function waitForRestart(restarting) {
       try { r = await fetch(`/api/media/${inp.dataset.up}/${encodeURIComponent(f.name)}`, { method: "PUT", body: f }).then(async (x) => { if (!x.ok) throw new Error((await x.json()).detail); return x.json(); }); }
       catch (e) { toast(`${f.name}: ${e.message}`); }
     }
-    toast("Pictures added"); drawPictures(r); Beat.loadMedia();
+    toast("Pictures added"); drawPictures(r); sumBand(r); Beat.loadMedia();
   }));
   $("#sec-band").querySelectorAll("[data-delpic]").forEach((b) => b.addEventListener("click", async () => {
     const r = await api(`/api/media/${b.dataset.delpic.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });

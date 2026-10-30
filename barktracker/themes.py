@@ -4,6 +4,10 @@ Built-in themes live here and can't be changed; "Duplicate" one to make your own
 files in <data_dir>/themes/*.json, so they're backed up with everything else and can be shared:
 download one from Settings > Theme, or upload a file someone sent you.
 
+A theme can also carry its own live band pictures (napping, sitting, barking): they live in
+<data_dir>/themes/<id>/quiet|active|bark/, and a theme with pictures downloads as a .zip holding
+theme.json and those folders. Upload either a .json or such a .zip.
+
 A theme file looks like:
   {"name": "Porch light", "mode": "auto",
    "colors": {"light": {"ink": "#1d2833", ...}, "dark": {"ink": "#e4e9ec", ...}},
@@ -14,8 +18,11 @@ Anything missing is taken from the default theme.
 from __future__ import annotations
 
 import copy
+import io
 import json
 import re
+import shutil
+import zipfile
 from pathlib import Path
 
 META = "theme"
@@ -158,7 +165,10 @@ def user_themes(cfg) -> list[dict]:
 
 
 def all_themes(cfg) -> list[dict]:
-    return [complete(t) for t in BUILTIN] + [complete(t) for t in user_themes(cfg)]
+    out = [complete(t) for t in BUILTIN] + [complete(t) for t in user_themes(cfg)]
+    for t in out:
+        t["pictures"] = picture_count(cfg, t["id"])
+    return out
 
 
 def find(cfg, tid: str) -> dict | None:
@@ -207,6 +217,7 @@ def delete(cfg, store, tid: str) -> None:
     if not re.fullmatch(r"[a-z0-9-]{1,48}", tid) or not p.exists():
         raise ValueError("No such theme")
     p.unlink()
+    clear_pictures(cfg, tid)
     if store.get_meta(META) == tid:
         store.set_meta(META, "default")
 
@@ -245,3 +256,95 @@ def _migrate(cfg, store) -> str:
         tid = save(cfg, t)["id"]
     store.set_meta(META, tid)
     return tid
+
+
+# ---- live band pictures in a theme ---------------------------------------------------------------
+KINDS = ("quiet", "active", "bark")
+PICTURE_TYPES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".mp4", ".webm"}
+MAX_PICTURE = 40 * 2**20
+MAX_PACK = 200 * 2**20
+
+
+def media_dir(cfg, tid: str) -> Path:
+    return folder(cfg) / tid
+
+
+def pictures(cfg, tid: str) -> dict[str, list[Path]]:
+    d = media_dir(cfg, tid)
+    return {k: sorted(p for p in (d / k).glob("*") if p.is_file() and p.suffix.lower() in PICTURE_TYPES)
+            if (d / k).is_dir() else [] for k in KINDS}
+
+
+def picture_count(cfg, tid: str) -> int:
+    if any(b["id"] == tid for b in BUILTIN):
+        return 0
+    return sum(len(v) for v in pictures(cfg, tid).values())
+
+
+def copy_pictures(cfg, tid: str, sources: dict[str, list[Path]]) -> int:
+    """Put pictures into one of your themes (replacing any it had)."""
+    if any(b["id"] == tid for b in BUILTIN):
+        raise ValueError("Built-in themes can't hold pictures; duplicate it first")
+    clear_pictures(cfg, tid)
+    n = 0
+    for k, files in sources.items():
+        if k not in KINDS:
+            continue
+        for p in files:
+            (media_dir(cfg, tid) / k).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, media_dir(cfg, tid) / k / p.name)
+            n += 1
+    return n
+
+
+def clear_pictures(cfg, tid: str) -> None:
+    d = media_dir(cfg, tid)
+    if re.fullmatch(r"[a-z0-9-]{1,48}", tid) and d.is_dir():
+        shutil.rmtree(d)
+
+
+def export_zip(cfg, t: dict) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("theme.json", json.dumps(export(t), indent=2))
+        for k, files in pictures(cfg, t["id"]).items():
+            for p in files:
+                z.write(p, f"{k}/{p.name}", compress_type=zipfile.ZIP_STORED)
+    return buf.getvalue()
+
+
+def import_pack(cfg, data: bytes) -> dict:
+    """A theme file someone shared: plain JSON, or a .zip with theme.json and picture folders."""
+    if data[:2] != b"PK":
+        try:
+            return save(cfg, json.loads(data.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("That file isn't a theme (.json or .zip)") from None
+    if len(data) > MAX_PACK:
+        raise ValueError("Theme packs must be under 200 MB")
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise ValueError("That .zip couldn't be opened") from None
+    names = z.namelist()
+    meta = next((n for n in names if n.rsplit("/", 1)[-1] == "theme.json"), None)
+    if not meta:
+        raise ValueError("The .zip has no theme.json")
+    prefix = meta[: -len("theme.json")]               # packs zipped with or without a top folder
+    try:
+        t = save(cfg, json.loads(z.read(meta).decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("theme.json in the .zip isn't valid JSON") from None
+    for info in z.infolist():
+        if info.is_dir() or not info.filename.startswith(prefix):
+            continue
+        rel = info.filename[len(prefix):].split("/")
+        if len(rel) != 2 or rel[0] not in KINDS:
+            continue
+        name = "".join(c for c in rel[1] if c.isalnum() or c in "._- ").strip()
+        if not name or Path(name).suffix.lower() not in PICTURE_TYPES or info.file_size > MAX_PICTURE:
+            continue                                  # only pictures, by name only (no paths out of the folder)
+        (media_dir(cfg, t["id"]) / rel[0]).mkdir(parents=True, exist_ok=True)
+        (media_dir(cfg, t["id"]) / rel[0] / name).write_bytes(z.read(info))
+    t["pictures"] = picture_count(cfg, t["id"])
+    return t

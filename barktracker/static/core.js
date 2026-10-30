@@ -535,8 +535,6 @@ const Beat = (() => {
 
   function start() {
     loadMedia(); connect();
-    const hb = document.getElementById("hearBtn");
-    if (hb) hb.onclick = () => hearBarking(30);
     // calm mode redraws four times a second; full motion animates every frame
     setInterval(() => { if (reduce.matches) frame(performance.now()); else if (!looping) { looping = true; requestAnimationFrame(frame); } }, 250);
     looping = true; requestAnimationFrame(frame);
@@ -548,5 +546,31 @@ const Beat = (() => {
 })();
 
 // ------------------------------------------------------------- kiosk view
-PAGES.live = () => { view.innerHTML = `<a class="kiosk-exit btn" href="#/">Back to dashboard</a>`; };
+// With two microphones, the bearing chart joins the full-screen view under the live band.
+PAGES.live = async () => {
+  view.innerHTML = `<a class="kiosk-exit btn" href="#/">Back to dashboard</a>`;
+  let st;
+  try { st = await api("/api/settings"); } catch (_) { return; }
+  if (route.name !== "live" || !st.values["direction.enabled"] || typeof makePolar !== "function") return;
+  const holder = h(`<div class="kiosk-polar"><canvas class="polar"></canvas></div>`);
+  $(".beat-info").appendChild(holder);
+  const polar = makePolar(holder.querySelector("canvas"));
+  let alive = true, since = 0, scansSince = 0, list = [], timer;
+  LOOPS.add(() => { alive = false; clearTimeout(timer); polar.stop(); holder.remove(); });
+  const poll = async () => {
+    if (!alive) return;
+    if (!document.hidden) {
+      try {
+        const a = await api(`/api/array/feed?since=${since}&scans_since=${scansSince}`);
+        for (const sc of a.scans) polar.hit(sc[1], sc[2], sc[3]);
+        if (a.scans.length) scansSince = a.scans[a.scans.length - 1][0];
+        list = list.concat(a.events).slice(-40);
+        if (a.events.length) since = a.events[a.events.length - 1].n;
+        polar.marks(list.filter((e) => e.valid).slice(-POLAR.MARKS), null);
+      } catch (_) { /* the band shows connection problems */ }
+    }
+    if (alive) timer = setTimeout(poll, 300);
+  };
+  poll();
+};
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && route.name === "live") location.hash = "#/"; });

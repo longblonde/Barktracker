@@ -12,7 +12,7 @@ async function renderDashboard(soft = false) {
   const dq = dogsQS();
   const [day, sum, heat, counts, dirs] = await Promise.all([
     api(`/api/day?date=${date}${dq}`), api(`/api/summary?days=14${dq}`), api(`/api/heatmap?days=28${dq}`),
-    api(`/api/clips/counts?since=${clipsSeen()}`), api(`/api/bearings?date=${date}&days=${S.dirDays || 1}${dq}`),
+    api(`/api/clips/counts?since=${clipsSeen()}`), api(`/api/bearings?date=${date}&days=${S.dirDays || 7}${dq}`),
   ]);
   if (route.name !== "dashboard") return;
   if (day.labels) RULE_LABELS = day.labels;
@@ -169,7 +169,7 @@ function heatSvg(heat, Wt = 394) {
       const op = v ? 0.12 + 0.88 * Math.sqrt(v / max) : 0;
       const x = lx + c * cw, y = r * ch + 1, w = cw - 2, h = ch - 3;
       g += `<rect class="hcell" data-r="${r}" data-c="${c}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2" fill="${v ? "var(--ink)" : "var(--faint)"}" fill-opacity="${v ? op.toFixed(2) : 1}"/>`;
-      for (const [a, b] of quiet[c] || []) {
+      for (const [a, b] of (quiet[r] || [])[c] || []) {
         g += `<rect class="hq" x="${x + a * w}" y="${y}" width="${(b - a) * w}" height="${h}" rx="${a === 0 && b === 1 ? 2 : 0}" fill="url(#qstripe)"/>`;
       }
     });
@@ -183,11 +183,12 @@ function heatSvg(heat, Wt = 394) {
 
 function heatInfoHtml(heat, r, c, pinned) {
   const n = heat.weekdays?.[r] || 0, secs = heat.grid[r][c], barks = heat.barks?.[r]?.[c] || 0, eps = heat.episodes?.[r]?.[c] || 0;
-  const q = heat.quiet?.[c] || [];
+  const q = heat.quiet?.[r]?.[c] || [];
   const qFull = q.some(([a, b]) => a === 0 && b === 1), qPart = !qFull && q.length;
+  const qa = q.length ? q[0] : null;
   const dogs = Object.entries(heat.dogs?.[r]?.[c] || {}).sort((a, b) => b[1] - a[1]);
   const qText = qFull ? `<span class="hi-quiet">Quiet hours</span>`
-    : qPart ? `<span class="hi-quiet">Quiet hours ${q[0][0] > 0 ? `from ${clock12(heat.quiet_start)}` : `until ${clock12(heat.quiet_end)}`}</span>` : "";
+    : qPart ? `<span class="hi-quiet">Quiet hours ${qa[0] > 0 ? `from ${hourName(c).replace(" ", `:${String(Math.round(qa[0] * 60)).padStart(2, "0")} `)}` : `until ${hourName(c).replace(" ", `:${String(Math.round(qa[1] * 60)).padStart(2, "0")} `)}`}</span>` : "";
   return `<div class="hi-head"><strong>${DAY_NAMES[r]}s, ${hourName(c)} to ${hourName(c + 1)}</strong>${qText}
       ${pinned ? `<button type="button" class="linkish hi-close">Close</button>` : ""}</div>
     <div class="hi-body">${secs || barks
@@ -196,7 +197,7 @@ function heatInfoHtml(heat, r, c, pinned) {
     ${dogs.length ? `<div class="hi-dogs">${dogs.map(([k, v]) => `<span class="tag" style="--c:${dogColor(k)}"><i></i>${esc(dogName(k))} ×${v}</span>`).join("")}</div>` : ""}`;
 }
 function heatCaption(heat) {
-  return `<p class="small muted hi-cap">Past 4 weeks by hour. Darker means more barking. <span class="qkey" aria-hidden="true"></span> Striped: quiet hours, ${clock12(heat.quiet_start)} to ${clock12(heat.quiet_end)}. Point at or tap an hour for details.</p>`;
+  return `<p class="small muted hi-cap">Past 4 weeks by hour. Darker means more barking. <span class="qkey" aria-hidden="true"></span> Striped: quiet hours, ${esc(heat.quiet_text || `${clock12(heat.quiet_start)} to ${clock12(heat.quiet_end)}`)}. Point at or tap an hour for details.</p>`;
 }
 
 function wireHeat(heat) {
@@ -243,7 +244,7 @@ function clipsCard(c) {
 
 // --- where barking came from: wedges by direction, each colored by the dog heard most there
 function bearingPanel(d) {
-  const days = S.dirDays || 1;
+  const days = S.dirDays || 7;
   const head = `<div class="row spread"><h2>Where it comes from</h2>
     <span class="seg" role="radiogroup" aria-label="Period"><button type="button" role="radio" data-dirdays="1" aria-checked="${days === 1}">This day</button><button type="button" role="radio" data-dirdays="7" aria-checked="${days === 7}">7 days</button><button type="button" role="radio" data-dirdays="30" aria-checked="${days === 30}">30 days</button></span></div>`;
   if (!d.barks.length) return head + `<p class="small muted">${d.total ? "No barks with a clear direction in this period." : "No barking in this period."} Directions come from the two microphones (Settings → Microphone).</p>`;

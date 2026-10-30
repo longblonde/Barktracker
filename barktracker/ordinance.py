@@ -20,11 +20,16 @@ THRESHOLDS = {
     "daily_minutes": 30,         # a day with at least this much barking counts as frequent
     "quiet_start": "22:00",
     "quiet_end": "07:00",
+    "weekend_quiet": False,      # different quiet hours on Friday and Saturday nights
+    "quiet_start_weekend": "23:00",
+    "quiet_end_weekend": "09:00",
     "quiet_minutes": 5,          # incident overlapping quiet hours by this much is flagged
     "habitual_days": 3,          # this many qualifying days...
     "habitual_window_days": 7,   # ...within this many days marks a habitual pattern
 }
-GLOBAL_KEYS = ("quiet_start", "quiet_end", "max_pause_seconds")   # shared by every rule
+GLOBAL_KEYS = ("quiet_start", "quiet_end", "max_pause_seconds", "weekend_quiet",
+               "quiet_start_weekend", "quiet_end_weekend")                # shared by every rule
+TIME_KEYS = ("quiet_start", "quiet_end", "quiet_start_weekend", "quiet_end_weekend")
 
 # Rule types you can add on the Report page. "scope" says what a rule flags: one incident, or a day.
 RULE_TYPES = {
@@ -170,9 +175,12 @@ def save_ordinance(store: Store, data: dict) -> dict:
         for k, v in data["thresholds"].items():
             if k not in th:
                 continue
-            if k in ("quiet_start", "quiet_end"):
+            if k in TIME_KEYS:
                 _parse_hhmm(v)   # validates
                 th[k] = v
+                continue
+            if k == "weekend_quiet":
+                th[k] = bool(v)
                 continue
             v = float(v)
             if v < 0:
@@ -218,24 +226,72 @@ class Clock:
         dt = datetime(d.year, d.month, d.day, tzinfo=self.tz) if self.tz else datetime(d.year, d.month, d.day)
         return dt.timestamp()
 
+    def at(self, d: date, t: dtime) -> float:
+        """The timestamp of a wall-clock time on a day (right across daylight-saving changes)."""
+        dt = datetime(d.year, d.month, d.day, t.hour, t.minute, tzinfo=self.tz) if self.tz else \
+            datetime(d.year, d.month, d.day, t.hour, t.minute)
+        return dt.timestamp()
+
     def tzname(self) -> str:
         return str(self.tz) if self.tz else (datetime.now().astimezone().tzname() or "local time")
 
 
+def is_weekend_night(d: date, overnight: bool) -> bool:
+    """Which windows use the weekend times: Friday and Saturday nights for a window that runs past
+    midnight (it's named by the evening it starts), Saturday and Sunday for one within a day."""
+    return d.weekday() in ((4, 5) if overnight else (5, 6))
+
+
+def quiet_window(th: dict, d: date) -> tuple[dtime, dtime]:
+    """Start and end of the quiet hours that begin on day d."""
+    qs, qe = _parse_hhmm(th["quiet_start"]), _parse_hhmm(th["quiet_end"])
+    if th.get("weekend_quiet"):
+        ws, we = _parse_hhmm(th["quiet_start_weekend"]), _parse_hhmm(th["quiet_end_weekend"])
+        if is_weekend_night(d, ws > we):
+            return ws, we
+    return qs, qe
+
+
+def quiet_spans(t0: float, t1: float, th: dict, clock: Clock) -> list[tuple[float, float]]:
+    """Every quiet-hours stretch overlapping [t0, t1], as timestamps (handles midnight and DST)."""
+    out = []
+    d, last = clock.dt(t0).date() - timedelta(days=1), clock.dt(t1).date()
+    while d <= last:
+        qs, qe = quiet_window(th, d)
+        if qs != qe:
+            a = clock.at(d, qs)
+            b = clock.at(d if qe > qs else d + timedelta(days=1), qe)
+            if b > t0 and a < t1:
+                out.append((a, b))
+        d += timedelta(days=1)
+    return out
+
+
+def in_quiet_hours(ts: float, th: dict, clock: Clock) -> bool:
+    return any(a <= ts < b for a, b in quiet_spans(ts, ts + 1, th, clock))
+
+
+def quiet_week(th: dict) -> list[tuple[int, int]]:
+    """Quiet hours as minutes of a week (Monday 00:00 = 0), for the weekday-by-hour heatmap."""
+    ref = date(2024, 1, 1)                      # a Monday
+    out = []
+    for k in range(7):
+        qs, qe = quiet_window(th, ref + timedelta(days=k))
+        if qs == qe:
+            continue
+        a = k * 1440 + qs.hour * 60 + qs.minute
+        dur = (qe.hour * 60 + qe.minute - qs.hour * 60 - qs.minute) % 1440
+        b = a + dur
+        if b <= 10080:
+            out.append((a, b))
+        else:                                    # Sunday night runs into Monday morning
+            out += [(a, 10080), (0, b - 10080)]
+    return out
+
+
 def quiet_overlap(start: float, end: float, th: dict, clock: Clock) -> float:
     """Seconds of [start, end] that fall inside quiet hours (window may cross midnight)."""
-    qs, qe = _parse_hhmm(th["quiet_start"]), _parse_hhmm(th["quiet_end"])
-    if qs == qe:
-        return 0.0
-    total, d = 0.0, clock.dt(start).date() - timedelta(days=1)
-    last = clock.dt(end).date()
-    while d <= last:
-        a = clock.day_start(d) + qs.hour * 3600 + qs.minute * 60
-        e_day = d if qe > qs else d + timedelta(days=1)
-        b = clock.day_start(e_day) + qe.hour * 3600 + qe.minute * 60
-        total += max(0.0, min(end, b) - max(start, a))
-        d += timedelta(days=1)
-    return total
+    return sum(max(0.0, min(end, b) - max(start, a)) for a, b in quiet_spans(start, end, th, clock))
 
 
 def build_incidents(episodes: list[dict], th: dict, clock: Clock, rules: list[dict] | None = None) -> list[dict]:
@@ -332,7 +388,7 @@ def describe_rule(r: dict, th: dict) -> str:
     p = r["params"]
     return {
         "sustained": lambda: f"barking lasting {p['minutes']} min or more, with no break longer than {th['max_pause_seconds']} s",
-        "quiet_hours": lambda: f"at least {p['minutes']} min of barking between {_fmt12(th['quiet_start'])} and {_fmt12(th['quiet_end'])}",
+        "quiet_hours": lambda: f"at least {p['minutes']} min of barking during quiet hours, {quiet_text(th)}",
         "intermittent": lambda: f"{p['minutes']} min or more of barking, on and off, within {p['window_hours']} hours",
         "frequent": lambda: f"{p['minutes']} min or more of barking in one day",
         "habitual": lambda: f"{p['days']} or more days meeting a rule within {p['window_days']} days",
@@ -352,11 +408,21 @@ def describe_thresholds(th: dict) -> dict[str, str]:
         "sustained": f"barking lasting {th['sustained_minutes']} min or more, "
                      f"with no break longer than {th['max_pause_seconds']} s",
         "quiet_hours": f"at least {th['quiet_minutes']} min of barking between "
-                       f"{_fmt12(th['quiet_start'])} and {_fmt12(th['quiet_end'])}",
+                       f"{_fmt12(th['quiet_start'])} and {_fmt12(th['quiet_end'])}"
+                       + (f" ({quiet_text(th).split('(', 1)[1]}" if th.get("weekend_quiet") else ""),
         "frequent": f"{th['daily_minutes']} min or more of barking in one day",
         "habitual": f"{th['habitual_days']} or more days meeting a criterion within "
                     f"{th['habitual_window_days']} days",
     }
+
+
+def quiet_text(th: dict) -> str:
+    base = f"{_fmt12(th['quiet_start'])} to {_fmt12(th['quiet_end'])}"
+    if not th.get("weekend_quiet"):
+        return base
+    ws, we = _parse_hhmm(th["quiet_start_weekend"]), _parse_hhmm(th["quiet_end_weekend"])
+    which = "Friday and Saturday nights" if ws > we else "Saturdays and Sundays"
+    return f"{base} ({_fmt12(th['quiet_start_weekend'])} to {_fmt12(th['quiet_end_weekend'])} on {which})"
 
 
 def _fmt12(hhmm: str) -> str:

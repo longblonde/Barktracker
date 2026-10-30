@@ -102,6 +102,8 @@ class DogIdentifier:
 
 
 MIN_DIR_BARKS = 5          # confirmed barks with a clear direction before a dog's direction counts
+DIR_FLOOR = 0.15           # weight left for a dog when a bark comes from far outside its usual direction
+DIR_UNKNOWN = 0.5          # weight for dogs whose direction isn't known yet
 
 
 def direction_priors(store: Store, ids: list[int]) -> list[dict | None] | None:
@@ -135,8 +137,8 @@ def direction_priors(store: Store, ids: list[int]) -> list[dict | None] | None:
         if b is None:
             out.append(None)
             continue
-        pr: dict = {d: 0.15 + 0.85 * float(np.exp(-0.5 * ((b - m) / sg) ** 2)) for d, (m, sg) in model.items()}
-        pr["other"] = 0.5                       # dogs whose direction isn't known yet
+        pr: dict = {d: DIR_FLOOR + (1 - DIR_FLOOR) * float(np.exp(-0.5 * ((b - m) / sg) ** 2)) for d, (m, sg) in model.items()}
+        pr["other"] = DIR_UNKNOWN                       # dogs whose direction isn't known yet
         out.append(pr)
     return out
 

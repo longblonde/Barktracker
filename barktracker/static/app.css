@@ -686,3 +686,38 @@ html[data-motion="reduced"] .beat-media > img, html[data-motion="reduced"] .beat
 .form label.inline select { flex: 1; }
 .beat { margin-bottom: 0; }
 .kv { min-width: 0; } .kv dd { min-width: 0; overflow-wrap: anywhere; } .two > * { min-width: 0; }
+body.kiosk .kiosk-polar { width: 100%; max-width: 900px; justify-self: center; }
+body.kiosk .kiosk-polar .polar { height: 300px; }
+body.kiosk .beat { grid-template-rows: 1fr auto auto; }
+/* settings cards */
+.cards { display: grid; gap: 12px; }
+.cards-ctl { justify-content: flex-end; gap: 14px; margin: -26px 0 8px; }
+.card { padding: 0; }
+.card > summary { list-style: none; cursor: pointer; padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.card > summary::-webkit-details-marker { display: none; }
+.card > summary h2 { margin: 0; }
+.card > summary::after { content: "Open"; margin-left: auto; font-size: 13px; color: var(--muted); text-decoration: underline; }
+.card[open] > summary::after { content: "Close"; }
+.card[open] > summary { border-bottom: 1px solid var(--faint); }
+.card .card-body { padding: 14px 16px 16px; }
+.card .card-body .panel { border: 0; padding: 0; background: none; margin-bottom: 18px; }
+.card .card-body .solo > .panel > h2:first-child, .card .card-body .solo > form > h2:first-child { display: none; }
+.adv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 18px; }
+.adv-changed { box-shadow: inset 3px 0 0 var(--caution); padding-left: 8px; }
+.wkq .help { grid-column: 1 / -1; }
+/* dog detail */
+.dog-head h1 { display: flex; align-items: center; gap: 10px; }
+.dogdot { width: 18px; height: 18px; border-radius: 50%; background: var(--c); display: inline-block; }
+.typical { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.tbark { margin: 0; display: grid; gap: 2px; }
+.tb-spec { width: 100%; height: 64px; display: block; border-radius: var(--radius-sm) var(--radius-sm) 0 0; image-rendering: pixelated; background: #0f1418; }
+.tb-wave { width: 100%; height: 44px; display: block; background: var(--panel); border: 1px solid var(--faint); border-top: 0; border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+.tbark figcaption { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+.dogfields .wide2 { grid-column: 2 / -1; }
+@media (max-width: 640px) { .dogfields .wide2 { grid-column: auto; } }
+.solo-trait .trait > h4 { display: none; }
+.form .alert label.unit, .form .alert label.check { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 6px; color: var(--ink); font-size: 14px; }
+.form .alert label.unit input, .form .alert label.unit select { width: auto; }
+.form .alert input[type=time] { width: 7.5em; }
+.form .alert input[type=number] { width: 5em; }
+.alert-cond input[type=checkbox], .alert-top input[type=checkbox] { width: auto; } .form .alert label.check { white-space: nowrap; }

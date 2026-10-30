@@ -204,3 +204,93 @@ def test_live_wedge_scan(tmp_path):
     f = c.get("/api/array/feed").json()
     assert len(f["scans"]) == len(hits) and app.array.watch_until > time.time()
     app.shutdown()
+
+
+def test_ongoing_and_summary_alerts(tmp_path):
+    srv = HTTPServer(("127.0.0.1", 0), _Sink)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    cfg = Config(data_dir=str(tmp_path), timezone=TZ)
+    app = BarkApp(cfg, None, start_detector=False)
+    rex = app.store.add_dog("Rex")["id"]
+    now = time.time()
+    episode(app.store, now - 3 * 3600, 600, 40, dog=rex)
+    AL.save(app.store, [{"name": "Live", "kind": "ntfy", "url": base + "/live", "when": "ongoing", "minutes": 5},
+                        {"name": "Day", "kind": "slack", "url": base + "/day", "when": "daily",
+                         "at": datetime.fromtimestamp(now - 60, ZoneInfo(TZ)).strftime("%H:%M")}])
+    _Sink.got.clear()
+
+    class Ep:                                   # an episode that's still going
+        id, start_ts, barks, dogs = 99, now - 400, 50, {rex: 50}
+    sent: set = set()
+    assert AL.check_ongoing(app.store, cfg, Ep, sent, now) == 1
+    assert AL.check_ongoing(app.store, cfg, Ep, sent, now + 60) == 0          # once per clip
+    Ep.start_ts = now - 60
+    assert AL.check_ongoing(app.store, cfg, type("E", (), {"id": 100, "start_ts": now - 60, "barks": 3, "dogs": {}}), sent, now) == 0
+    assert AL.check_scheduled(app.store, cfg, now) == 1
+    assert AL.check_scheduled(app.store, cfg, now + 30) == 0                   # once a day
+    for _ in range(50):
+        if len(_Sink.got) >= 2:
+            break
+        time.sleep(0.05)
+    body = {p: b for p, _, b in _Sink.got}
+    assert body["/live"].decode().startswith("Still barking: 7 min so far (50 barks): Rex")
+    assert "10:00 of barking in 1 clip" in json.loads(body["/day"])["text"]
+    text, data = AL.summary(app.store, cfg, now - 86400, now, [rex + 1])
+    assert text == "No barking." and data["clips"] == 0
+    srv.shutdown()
+    app.shutdown()
+
+
+def test_clip_filter_matches_row_tags_and_advanced(tmp_path):
+    app = BarkApp(Config(data_dir=str(tmp_path), timezone=TZ), None, start_detector=False)
+    c = TestClient(create_app(app))
+    rex = app.store.add_dog("Rex")["id"]
+    t = time.time() - 7200
+    sure = episode(app.store, t, 5, 3)                       # high bark score, matched with confidence
+    with app.store.tx() as db:
+        db.execute("UPDATE barks SET pred_dog_id=?, pred_conf=0.95 WHERE episode_id=?", (rex, sure))
+    shaky = episode(app.store, t + 100, 5, 3)                # matched, but not very surely
+    with app.store.tx() as db:
+        db.execute("UPDATE barks SET pred_dog_id=?, pred_conf=0.6 WHERE episode_id=?", (rex, shaky))
+    unnamed = episode(app.store, t + 200, 5, 3)              # nobody matched
+    labelled = episode(app.store, t + 300, 5, 3, dog=rex)
+    rows = {e["id"]: e["tag"] for e in c.get("/api/episodes?limit=50").json()["items"]}
+    assert rows == {sure: "auto", shaky: "unreviewed", unnamed: "unreviewed", labelled: "manual"}
+    for tag in ("auto", "unreviewed", "manual"):
+        got = {e["id"] for e in c.get(f"/api/episodes?tag={tag}&limit=1").json()["items"]}
+        total = c.get(f"/api/episodes?tag={tag}").json()["total"]
+        assert total == sum(1 for v in rows.values() if v == tag) and got <= {k for k, v in rows.items() if v == tag}
+    # the doubt limit is adjustable (Settings > Advanced): at 55% the shaky match counts as sure
+    assert c.put("/api/advanced", json={"values": {"web.DOUBT_MATCH": 0.55}}).status_code == 200
+    assert {e["id"]: e["tag"] for e in c.get("/api/episodes").json()["items"]}[shaky] == "auto"
+    assert c.get("/api/episodes?tag=auto").json()["total"] == 2
+    c.put("/api/advanced", json={"reset": True})
+    app.shutdown()
+
+
+def test_dog_page_and_theme_pack(tmp_path):
+    import io
+    import zipfile
+    app = BarkApp(Config(data_dir=str(tmp_path), timezone=TZ), None, start_detector=False)
+    c = TestClient(create_app(app))
+    rex = c.post("/api/dogs", json={"name": "Rex", "breed": "Beagle"}).json()
+    assert rex["breed"] == "Beagle"
+    episode(app.store, time.time() - 3600, 20, 8, dog=rex["id"])
+    d = c.get(f"/api/dogs/{rex['id']}/detail?days=30").json()
+    assert d["totals"]["barks"] == 8 and len(d["daily"]) == 30 and sum(d["hours"]) == 8
+    assert sum(map(sum, d["week"])) == 8 and d["rhythm"]["pause_s"] == 2.5
+    assert c.get("/api/dogs/999/detail").status_code == 404
+    # a theme can carry the live band pictures, and travels as a .zip
+    mine = {**c.get("/api/themes/default.json").json(), "name": "Pack"}
+    c.post("/api/themes", json=mine)
+    assert c.get("/api/media").json()["source"] == "own"
+    assert c.post("/api/themes/pack/pictures", json={}).json()["theme"]["pictures"] == 3
+    m = c.get("/api/media").json()
+    assert m["source"] == "theme" and c.get(m["bark"][0]["url"]).status_code == 200
+    z = c.get("/api/themes/pack.zip").content
+    assert sorted(zipfile.ZipFile(io.BytesIO(z)).namelist())[0] == "active/sit.svg"
+    c.delete("/api/themes/pack")
+    assert c.put("/api/theme-pack", content=z).json()["theme"]["pictures"] == 3
+    assert c.put("/api/theme-pack", content=b"not a theme").status_code == 400
+    app.shutdown()

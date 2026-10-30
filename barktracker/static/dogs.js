@@ -3,6 +3,7 @@
 // named yet; and for each dog its voice, where it barks from and its rhythm.
 
 async function renderDogs() {
+  if (route.arg) return renderDog(Number(route.arg));
   const r = await loadDogs();
   if (route.name !== "dogs") return;
   const need = r.min_labels;
@@ -69,11 +70,13 @@ function dogCard(d, need) {
         <label>Size <select data-field="size" data-id="${d.id}">${[["", "Not sure"], ["small", "Small"], ["medium", "Medium"], ["large", "Large"]].map(([v, t]) => `<option value="${v}" ${(d.size || "") === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
         <label>Household <input type="text" list="addrList" value="${esc(d.address)}" data-field="address" data-id="${d.id}" placeholder="Address"></label>
         <label>Owner <input type="text" value="${esc(d.owner)}" data-field="owner" data-id="${d.id}" placeholder="optional"></label>
-        <label class="wide">Description <input type="text" value="${esc(d.description)}" data-field="description" data-id="${d.id}" placeholder="Breed, color, size"></label>
+        <label>Breed <input type="text" value="${esc(d.breed || "")}" data-field="breed" data-id="${d.id}" placeholder="if you know it"></label>
+        <label class="wide2">Description <input type="text" value="${esc(d.description)}" data-field="description" data-id="${d.id}" placeholder="Color, markings, size"></label>
       </div>
       <div class="dogtraits">${voiceBlock(d)}${dirBlock(d)}${rhythmBlock(d)}</div>
     </div>
     <div class="row dogactions">
+      <a class="btn primary" href="#/dogs/${d.id}">Details</a>
       <a class="btn" href="#/clips" data-filter="${d.id}">Clips</a>
       <a class="btn" href="#/report" data-report="${d.id}">Report</a>
       <button class="btn danger" data-del="${d.id}">Remove</button>
@@ -103,7 +106,7 @@ function wireDogs(r) {
       if (mate && !S.dogs[i.dataset.id]?.owner) body.owner = mate.owner;
     }
     try { await api(`/api/dogs/${i.dataset.id}`, { method: "PATCH", body }); } catch (e) { toast(e.message); return; }
-    toast(`${{ name: "Name", size: "Size", address: "Household", owner: "Owner", description: "Description" }[i.dataset.field]} saved`);
+    toast(`${{ name: "Name", size: "Size", address: "Household", owner: "Owner", description: "Description", breed: "Breed" }[i.dataset.field]} saved`);
     if (i.dataset.field === "address" || i.dataset.field === "size") renderDogs(); else loadDogs();
   }));
   view.querySelectorAll("[data-color]").forEach((i) => i.addEventListener("change", async () => {
@@ -239,6 +242,116 @@ function rhythmBlock(d) {
     <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="How long ${esc(d.name)} pauses between barks">${bars}<text x="0" y="${H - 1}" style="font-size:9px">0</text><text x="${W}" y="${H - 1}" text-anchor="end" style="font-size:9px">8 s</text></svg>
     <p class="small muted">Usually ${r.pause_s < 1 ? `${Math.round(r.pause_s * 1000)} ms` : `${r.pause_s.toFixed(1)} s`} between barks${r.per_min ? `, about ${Math.round(r.per_min)} a minute while going` : ""}; ${style}.</p>
   </div>`;
+}
+
+// ---- one dog in detail -------------------------------------------------------------------------
+async function renderDog(id) {
+  const days = S.dogDays || 90;
+  let r;
+  try { [r] = await Promise.all([api(`/api/dogs/${id}/detail?days=${days}`), loadDogs()]); }
+  catch (e) { view.innerHTML = `<section><a href="#/dogs" class="small">All dogs</a><div class="notice err">${esc(e.message)}</div></section>`; return; }
+  if (route.name !== "dogs" || Number(route.arg) !== id) return;
+  const d = r.dog, t = r.totals, full = S.dogs[id] || d, v = r.voice;
+  const homeTxt = [d.address, d.owner].filter(Boolean).join(" · ");
+  view.innerHTML = `
+    <section class="dog-head" style="--c:${d.color}">
+      <a href="#/dogs" class="small">All dogs</a>
+      <div class="row spread">
+        <h1><i class="dogdot"></i>${esc(d.name)}</h1>
+        <span class="seg" role="radiogroup" aria-label="Period">${[30, 90, 365].map((n) => `<button type="button" role="radio" data-days="${n}" aria-checked="${days === n}">${n === 365 ? "Year" : `${n} days`}</button>`).join("")}</span>
+      </div>
+      <p class="sub">${[homeTxt || "No household set", d.breed || "", d.size ? `${d.size} (your setting)` : ""].filter(Boolean).map(esc).join(" · ")}</p>
+      <dl class="facts">
+        <div><dt>Barking, last ${days === 365 ? "year" : `${days} days`}</dt><dd>${fmtDur(t.recent_seconds)}</dd></div>
+        <div><dt>Barks in that time</dt><dd>${t.recent_barks}</dd></div>
+        <div><dt>All barks</dt><dd>${t.barks} <span class="small muted">${t.labelled} labelled</span></dd></div>
+        <div><dt>First heard</dt><dd class="small">${t.first_ts ? fmtDay(t.first_ts) : "–"}</dd></div>
+        <div><dt>Last heard</dt><dd class="small">${t.last_ts ? `${fmtDay(t.last_ts)}, ${fmtTime(t.last_ts)}` : "–"}</dd></div>
+      </dl>
+    </section>
+    <section class="panel"><h2>Timeline</h2>${dogDaily(r.daily, d.color)}<p class="small muted" style="margin:6px 0 0">Minutes of barking per day (this dog's share of each clip).</p></section>
+    <section class="grid2">
+      <div class="panel"><h2>Time of day</h2>${dogHours(r.hours, d.color)}<p class="small muted" style="margin:6px 0 0">Barks by hour, over the period.</p></div>
+      <div class="panel"><h2>Density</h2>${dogWeek(r.week, d.color)}<p class="small muted" style="margin:6px 0 0">Barks by weekday and hour. Darker means more.</p></div>
+    </section>
+    <section class="panel"><h2>Voice</h2>
+      ${v ? `<div class="dogtraits"><div class="solo-trait">${voiceBlock(full)}</div>
+        ${histBlock("Pitch", v.pitch, (x) => fmtHz(x), d.color)}${histBlock("Tone (brightness)", v.tone, (x) => fmtHz(x), d.color)}${histBlock("Bark length", v.length, (x) => `${x.toFixed(2)} s`, d.color)}</div>
+        <p class="small muted">${v.confirmed ? `From the ${v.from} barks you labelled.` : `From ${v.from} automatically matched barks; label some to make this firmer.`} Breed can't be told from sound reliably, so it's yours to fill in.</p>`
+        : `<p class="small muted">No barks with a voice measurement yet.</p>`}
+      <h3>Typical barks</h3>
+      <div class="typical">${r.typical.length ? r.typical.map((b, i) => `
+        <figure class="tbark" data-b="${b.bark_id}">
+          <canvas class="tb-spec" width="300" height="64"></canvas><canvas class="tb-wave" height="44"></canvas>
+          <figcaption><button type="button" class="btn sample" data-s="${i}">▶ Play</button> <span class="small muted">${fmtDay(b.ts)} ${fmtTime(b.ts)} · ${Math.round(b.prob * 100)}% bark</span> <a class="small" href="#/clips/${b.episode_id}">clip</a></figcaption>
+        </figure>`).join("") : `<p class="small muted">No recordings of this dog are left (clips are removed by the storage rules).</p>`}</div>
+      <p class="small muted">The barks closest to this dog's usual sound: spectrogram on top (low pitch at the bottom), waveform below, the bark itself between the marks.</p>
+    </section>
+    <section class="grid2">
+      <div class="panel solo-trait"><h2>Where it barks from</h2>${r.direction ? dirBlock({ ...full, direction: r.direction }) : `<p class="small muted">No directions yet: they need two microphones (Settings → Microphone and detection).</p>`}</div>
+      <div class="panel solo-trait"><h2>Rhythm</h2>${r.rhythm ? rhythmBlock({ ...full, rhythm: r.rhythm }) : `<p class="small muted">Not enough barks yet.</p>`}</div>
+    </section>
+    <section><h2>Longest clips</h2>
+      <div class="list">${r.longest.length ? r.longest.map((e) => `<a class="ep" href="#/clips/${e.id}"><span></span><span class="when">${fmtTime(e.start_ts)}<span class="day">${fmtDay(e.start_ts)}</span></span><span class="dur">${fmtDur(e.duration)}</span><span class="n">${e.bark_count} barks</span><span></span><span></span></a>`).join("") : `<div class="empty">None in this period.</div>`}</div>
+    </section>`;
+  view.querySelectorAll("[data-days]").forEach((b) => b.onclick = () => { S.dogDays = Number(b.dataset.days); renderDog(id); });
+  view.querySelectorAll(".tbark").forEach((fig, i) => {
+    const b = r.typical[i];
+    fig.querySelector(".sample").onclick = (e) => playSegment(e.currentTarget, b.episode_id, b.offset, b.duration);
+    api(`/api/barks/${b.bark_id}/wave?width=300`).then((w) => drawBark(fig, w, d.color)).catch(() => {});
+  });
+}
+
+function drawBark(fig, w, color) {
+  const sc = fig.querySelector(".tb-spec"); paintSpec(sc, w.spec);
+  const cv = fig.querySelector(".tb-wave"), dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 300, H = cv.clientHeight || 44;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const n = w.min.length, x = (i) => (i / n) * W, y = (v) => H / 2 - v * (H / 2 - 2);
+  g.fillStyle = cssVar("--faint"); g.fillRect((w.bark_start / w.seconds) * W, 0, ((w.bark_end - w.bark_start) / w.seconds) * W, H);
+  g.fillStyle = color;
+  for (let i = 0; i < n; i++) g.fillRect(x(i), y(w.max[i]), Math.max(1, W / n), Math.max(1, y(w.min[i]) - y(w.max[i])));
+  g.fillStyle = cssVar("--ink");
+  for (const t of [w.bark_start, w.bark_end]) g.fillRect((t / w.seconds) * W, 0, 1, H);
+}
+function dogDaily(daily, color) {
+  const W = 1000, H = 120, n = daily.length, mx = Math.max(60, ...daily.map((x) => x.seconds)), bw = W / n;
+  let g = "";
+  daily.forEach((x, i) => {
+    const hh = ((H - 20) * x.seconds) / mx;
+    g += `<rect x="${(i * bw + bw * 0.12).toFixed(1)}" y="${(H - 18 - hh).toFixed(1)}" width="${(bw * 0.76).toFixed(1)}" height="${Math.max(0, hh).toFixed(1)}" fill="${color}"><title>${prettyIso(x.date)}: ${fmtDur(x.seconds)}, ${x.barks} barks</title></rect>`;
+  });
+  const step = Math.ceil(n / 8);
+  daily.forEach((x, i) => { if (i % step === 0) g += `<text x="${(i * bw).toFixed(1)}" y="${H - 4}">${new Date(x.date + "T12:00:00Z").toLocaleDateString([], { month: "short", day: "numeric", timeZone: "UTC" })}</text>`; });
+  g += `<text x="0" y="10">top: ${fmtDur(mx)} a day</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barking per day">${g}</svg>`;
+}
+function dogHours(hours, color) {
+  const W = 480, H = 120, mx = Math.max(1, ...hours), bw = W / 24;
+  let g = "";
+  hours.forEach((v, i) => {
+    const hh = ((H - 20) * v) / mx;
+    g += `<rect x="${(i * bw + 1).toFixed(1)}" y="${(H - 18 - hh).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${hh.toFixed(1)}" fill="${color}"><title>${hourName(i)}: ${v} barks</title></rect>`;
+  });
+  for (const hr of [0, 6, 12, 18]) g += `<text x="${hr * bw}" y="${H - 4}">${hr === 0 ? "12a" : hr === 12 ? "12p" : hr > 12 ? hr - 12 + "p" : hr + "a"}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barks by hour">${g}</svg>`;
+}
+function dogWeek(week, color) {
+  const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], lx = 34, cw = 18, ch = 16, W = lx + 24 * cw, H = 7 * ch + 18;
+  const mx = Math.max(1, ...week.flat());
+  let g = "";
+  week.forEach((row, r) => {
+    g += `<text x="0" y="${r * ch + 12}">${names[r]}</text>`;
+    row.forEach((v, c) => { g += `<rect x="${lx + c * cw}" y="${r * ch + 1}" width="${cw - 2}" height="${ch - 3}" rx="2" fill="${v ? color : "var(--faint)"}" fill-opacity="${v ? (0.15 + 0.85 * Math.sqrt(v / mx)).toFixed(2) : 1}"><title>${names[r]} ${hourName(c)}: ${v} barks</title></rect>`; });
+  });
+  for (const hr of [0, 6, 12, 18]) g += `<text x="${lx + hr * cw}" y="${H - 2}">${hr === 0 ? "12a" : hr === 12 ? "12p" : hr > 12 ? hr - 12 + "p" : hr + "a"}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barks by weekday and hour">${g}</svg>`;
+}
+function histBlock(title, h, fmt, color) {
+  if (!h?.hist?.length) return "";
+  const W = 200, H = 52, n = h.hist.length, mx = Math.max(1, ...h.hist), bw = W / n;
+  const bars = h.hist.map((v, i) => `<rect x="${(i * bw + 1).toFixed(1)}" y="${(H - 12 - ((H - 14) * v) / mx).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${(((H - 14) * v) / mx).toFixed(1)}" fill="${color}" fill-opacity=".7"/>`).join("");
+  return `<div class="trait"><h4>${title}</h4><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${title} spread">${bars}<text x="0" y="${H - 1}" style="font-size:9px">${fmt(h.lo)}</text><text x="${W}" y="${H - 1}" text-anchor="end" style="font-size:9px">${fmt(h.hi)}</text></svg></div>`;
 }
 
 PAGES.dogs = renderDogs;

@@ -414,12 +414,14 @@ class Backup:
 
         # 3. pictures and config
         self.progress["step"] = "copying pictures and settings"
-        if cfg.media_path.exists():
-            local_m = _tree_files(cfg.media_path)
+        for src, sub in ((cfg.media_path, "media"), (cfg.data_path / "themes", "themes")):
+            if not src.exists():
+                continue
+            local_m = _tree_files(src)
             for k, f in local_m.items():
-                if not _same(f, root / "media" / k):
-                    _copy_file(f, root / "media" / k)
-            for k, f in _tree_files(root / "media").items():
+                if not _same(f, root / sub / k):
+                    _copy_file(f, root / sub / k)
+            for k, f in _tree_files(root / sub).items():
                 if k not in local_m:
                     f.unlink(missing_ok=True)
         if self.config_file and Path(self.config_file).is_file():
@@ -472,11 +474,12 @@ class Backup:
                         _copy_file(f, self.cfg.clips_path / k)
                         copied += 1
                         self.restore_progress["done"] = i
-                if (root / "media").exists():
-                    self.restore_progress["step"] = "copying pictures"
-                    for k, f in _tree_files(root / "media").items():
-                        if not _same(f, self.cfg.media_path / k):
-                            _copy_file(f, self.cfg.media_path / k)
+                for sub, dest in (("media", self.cfg.media_path), ("themes", self.cfg.data_path / "themes")):
+                    if (root / sub).exists():
+                        self.restore_progress["step"] = "copying pictures and themes"
+                        for k, f in _tree_files(root / sub).items():
+                            if not _same(f, dest / k):
+                                _copy_file(f, dest / k)
                 self.restore_progress["step"] = "staging the database"
                 _copy_file(snap, data / RESTORE_DB)
                 (data / PENDING).write_text(json.dumps({

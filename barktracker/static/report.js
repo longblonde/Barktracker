@@ -30,8 +30,8 @@ async function renderReport() {
       <p class="sub" style="max-width:66ch">A log of barking for one dog or one household, checked against your local rules, ready to print or download for a complaint.</p>
     </section>
     <section class="no-print">
-      <details class="panel rulespanel" ${placeholder || S.rulesOpen ? "open" : ""} id="rulesBox">
-        <summary><h2>Local rules</h2><span class="small muted">${placeholder ? "Placeholder wording: set these up for where you live." : esc(ord.ordinance.jurisdiction)} · quiet hours ${clock12(ord.ordinance.thresholds.quiet_start)} to ${clock12(ord.ordinance.thresholds.quiet_end)} · ${ord.ordinance.rules.filter((r) => r.enabled).length} rules</span></summary>
+      <details class="panel rulespanel" ${S.rulesOpen ? "open" : ""} id="rulesBox">
+        <summary><h2>Local rules</h2><span class="small muted">${placeholder ? "Placeholder wording: set these up for where you live." : esc(ord.ordinance.jurisdiction)} · quiet hours ${clock12(ord.ordinance.thresholds.quiet_start)} to ${clock12(ord.ordinance.thresholds.quiet_end)}${ord.ordinance.thresholds.weekend_quiet ? " (weekends differ)" : ""} · ${ord.ordinance.rules.filter((r) => r.enabled).length} rules</span></summary>
         <div id="ordForm"></div>
       </details>
     </section>
@@ -92,7 +92,7 @@ function drawOrdinance(r) {
       <span class="rule-params">${Object.keys(t.params).map((k) => `<label class="unit">${PARAM_NAMES[k]}<input type="number" min="0" step="1" data-p="${k}" value="${x.params[k]}">${PARAM_UNITS[k]}</label>`).join("")}</span>
       <span class="rule-scope small muted">${t.scope === "day" ? "per day" : "per incident"}</span>
       <button type="button" class="btn icon" data-del aria-label="Remove ${esc(x.label)}">×</button>
-      <span class="rule-help small muted">${esc(t.help)}${x.type === "quiet_hours" ? `, between ${clock12(th.quiet_start)} and ${clock12(th.quiet_end)}` : ""}${x.type === "sustained" ? `, no break over ${th.max_pause_seconds} s` : ""}.</span>
+      <span class="rule-help small muted">${esc(t.help)}${x.type === "quiet_hours" ? `, between ${clock12(th.quiet_start)} and ${clock12(th.quiet_end)}${th.weekend_quiet ? ` (weekends ${clock12(th.quiet_start_weekend)} to ${clock12(th.quiet_end_weekend)})` : ""}` : ""}${x.type === "sustained" ? `, no break over ${th.max_pause_seconds} s` : ""}.</span>
     </div>`;
   };
   const draw = () => {
@@ -111,6 +111,10 @@ function drawOrdinance(r) {
           <div class="grid3"><label>Start<input type="time" name="quiet_start" value="${th.quiet_start}" required></label>
             <label>End<input type="time" name="quiet_end" value="${th.quiet_end}" required></label>
             <label>Breaks that end an incident<span class="unit"><input type="number" name="max_pause_seconds" value="${th.max_pause_seconds}" min="0" step="5">s</span></label></div>
+          <label class="check"><input type="checkbox" name="weekend_quiet" ${th.weekend_quiet ? "checked" : ""}> Different quiet hours at weekends</label>
+          <div class="grid3 wkq" ${th.weekend_quiet ? "" : "hidden"}><label>Weekend start<input type="time" name="quiet_start_weekend" value="${th.quiet_start_weekend}"></label>
+            <label>Weekend end<input type="time" name="quiet_end_weekend" value="${th.quiet_end_weekend}"></label>
+            <span class="help">Overnight hours count as weekend on Friday and Saturday nights (named by the evening they start); daytime hours on Saturdays and Sundays.</span></div>
           <p class="help" style="margin:-4px 0 0">Shown striped on the dashboard. An incident is barking with no break longer than the time on the right.</p>
           <h3>Where to report</h3>
           <div class="contacts-ed">${contacts.map((c, i) => `<div class="contact" data-c="${i}"><input type="text" data-ck="name" value="${esc(c.name)}" placeholder="Anytown Animal Control" aria-label="Name"><input type="text" data-ck="phone" value="${esc(c.phone)}" placeholder="555-555-0101 or a web address" aria-label="Phone or web address"><button type="button" class="btn icon" data-cdel aria-label="Remove">×</button></div>`).join("")}</div>
@@ -147,6 +151,8 @@ function drawOrdinance(r) {
       el.querySelector("[data-cdel]").onclick = () => { contacts.splice(Number(el.dataset.c), 1); keep(); draw(); dirty(); };
     });
     box.querySelectorAll("input[name], textarea[name]").forEach((i) => i.addEventListener("input", dirty));
+    const wk = box.querySelector('[name="weekend_quiet"]');
+    if (wk) wk.onchange = () => { box.querySelector(".wkq").hidden = !wk.checked; dirty(); };
     $("#addContact").onclick = () => { keep(); contacts.push({ name: "", phone: "" }); draw(); dirty(); box.querySelector(".contact:last-child input")?.focus(); };
     const menu = $("#ruleMenu"), add = $("#addRule");
     add.onclick = () => { menu.hidden = !menu.hidden; add.setAttribute("aria-expanded", String(!menu.hidden)); };
@@ -174,6 +180,7 @@ function drawOrdinance(r) {
   const keep = () => {
     box.querySelectorAll("input[name], textarea[name]").forEach((i) => {
       if (i.name.startsWith("reporter.")) r.reporter[i.name.slice(9)] = i.value;
+      else if (i.type === "checkbox") th[i.name] = i.checked;
       else if (i.name in th) th[i.name] = i.name === "max_pause_seconds" ? Number(i.value) : i.value;
       else o[i.name] = i.value;
     });
@@ -181,7 +188,8 @@ function drawOrdinance(r) {
   async function save() {
     keep();
     const body = { rules, contacts: contacts.filter((c) => c.name.trim() || c.phone.trim()),
-                   thresholds: { quiet_start: th.quiet_start, quiet_end: th.quiet_end, max_pause_seconds: th.max_pause_seconds } };
+                   thresholds: { quiet_start: th.quiet_start, quiet_end: th.quiet_end, max_pause_seconds: th.max_pause_seconds,
+                                 weekend_quiet: !!th.weekend_quiet, quiet_start_weekend: th.quiet_start_weekend, quiet_end_weekend: th.quiet_end_weekend } };
     for (const k of ["jurisdiction", "code_section", "rule_text", "rule_note", "source_url", "penalty"]) body[k] = o[k];
     const pv = $("#preset").value, base = r.presets.find((p) => p.id === pv);
     body.preset = pv === "custom" || ["jurisdiction", "code_section", "rule_text"].some((k) => body[k] !== r.ordinance[k]) ? "custom" : pv;
