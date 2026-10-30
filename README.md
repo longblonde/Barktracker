@@ -39,7 +39,7 @@ A Raspberry Pi 4 that listens for barking, logs when it happens and for how long
 | microSD 32 GB+ or USB SSD | About 2 MB per minute of clip audio. |
 | Official Pi 4 power supply | Webcams draw extra current; under-powered Pis drop USB audio. |
 
-Point the webcam toward where the barking comes from (a window facing the neighbor's yard works well), away from fans and the fridge. Webcams apply automatic gain, so leave the microphone boost at 0 unless barks read quieter than -35 dBFS on the Detection and tuning page.
+Point the webcam toward where the barking comes from (a window facing the neighbor's yard works well), away from fans and the fridge. Webcams apply automatic gain, so leave the microphone boost at 0 unless barks read quieter than -35 dBFS on the Detection and tuning page. Microphones without automatic gain, such as the AIY Voice HAT, need a boost: [docs/MICROPHONES.md](docs/MICROPHONES.md) lists the microphones tested so far with their starting settings, and how to work them out for a new one.
 
 Timestamps matter for complaints. The Pi 4 has no battery-backed clock, so keep it on the network; Settings → System and every report say whether the clock is synchronized to internet time. After a boot the clock can be minutes off until the time server answers; when it then jumps by more than 30 seconds, everything logged since the boot is moved to the corrected time and its clips renamed to match (the log says "Clock jumped").
 
@@ -194,6 +194,7 @@ The original AIY Voice Kit HAT (the larger black board) has two MEMS microphones
 1. Fit the HAT and its microphone board, then run `./scripts/setup-voicehat.sh`. It adds `dtoverlay=googlevoicehat-soundcard` to `/boot/firmware/config.txt` (keeping a backup). Reboot.
 2. Run `./scripts/setup-voicehat.sh check`. It lists sound cards and records 3 seconds, reporting each mic's level. Both should be similar; a dead channel means a loose ribbon.
 3. In **Settings → Microphone and detection**, check the Voice HAT is the microphone (it's picked automatically when nothing else is set), choose **Stereo**, press **AIY Voice HAT: 7.1 cm**, and save. Clap at each end of the board on the Tuning page: mic A's end should light near 0°. If it's mirrored, tick **Mic A is on the other side**.
+4. Set **Microphone boost** to +18 dB and **Ignore quieter than** to -62 dBFS. The HAT has no hardware gain, so distant barks record around -45 dBFS without the boost. Details and measurements are in [docs/MICROPHONES.md](docs/MICROPHONES.md).
 
 With direction on, BarkTracker records at the card's native rate (48 kHz on the HAT) for finer timing, and resamples for detection as before. The speaker amp, button and LED aren't used.
 

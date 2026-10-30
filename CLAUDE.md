@@ -7,12 +7,13 @@ identification, ordinance-based complaint reports. Repo: github.com/longblonde/B
 
 - `main` is v0.14.0. The `refactor` branch is v0.15.0, a dev branch the owner tests on the Pi before
   anything merges. Don't merge to main unless asked.
-- Open question from the owner's list: `docs/REFACTOR-QUESTIONS.md` (#6, label a whole discovered dog
-  group at once?).
+- The owner's questions in `docs/REFACTOR-QUESTIONS.md` are all answered (#6, labelling a whole
+  discovered group, done 2026-10-30).
 - The Pi: Raspberry Pi 4 (4 GB), 64-bit Raspberry Pi OS, at 192.168.1.185, service `barktracker`
   (systemd), dashboard on port 8080, repo at `~/barktracker`. Microphone: Google AIY Voice HAT v1
   (two MEMS mics 7.1 cm apart, stereo at 48 kHz, `dtoverlay=googlevoicehat-soundcard`), direction on.
-  The HAT is quiet: background about -80 dBFS, so "ignore quieter than" (-55 dBFS) may need lowering.
+  The HAT has no hardware gain: set to boost +18 dB, ignore quieter than -62 dBFS (2026-10-30, measured
+  with a clap test; see `docs/MICROPHONES.md`). Bark threshold is on trial at 0.15 (default 0.35).
 
 ## Layout
 

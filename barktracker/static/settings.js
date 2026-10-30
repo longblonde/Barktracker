@@ -73,7 +73,7 @@ function drawMic(st) {
     <h3>Detection</h3>
     <p class="small muted intro">The loudness trigger, the quietest sound checked and the bark confidence are set on <a href="#/tune">Detection and tuning</a>, where you can see what they catch.</p>
     <div class="grid3">
-      ${fieldNum("audio.gain_db", "Microphone boost", v["audio.gain_db"], { unit: "dB", min: -12, max: 30, help: "Webcams adjust their own gain; leave at 0 unless barks look quiet." })}
+      ${fieldNum("audio.gain_db", "Microphone boost", v["audio.gain_db"], { unit: "dB", min: -12, max: 30, help: "Webcams adjust their own gain; leave at 0 unless barks look quiet. The AIY Voice HAT has none: start at +18 dB (docs/MICROPHONES.md)." })}
       ${fieldNum("detection.episode_gap", "Quiet time that ends a clip", v["detection.episode_gap"], { unit: "seconds", min: 1, max: 120, step: 0.5 })}
       ${fieldNum("detection.min_episode_barks", "Smallest clip to keep", v["detection.min_episode_barks"], { unit: "barks", min: 1, max: 50, help: "2 skips single woofs." })}
     </div>
