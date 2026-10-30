@@ -39,7 +39,8 @@ MAX_PER_PASS = 8                 # estimates per 0.25 s pass, so a noisy yard ca
 SCAN_EVERY = 0.15                # live scan while someone watches the Tuning page
 SCAN_WINDOW = 0.12               # seconds of audio per live scan
 SCAN_LAG = 0.3                   # scan this far behind real time, so both streams have arrived
-SCAN_MIN_RISE = 3.0              # dB over the background before a scan is worth showing
+SCAN_MIN_RISE = 8.0              # dB over the background before a scan is worth showing (quiet-room
+                                 # electrical noise on the AIY HAT correlates at 3-5 dB and lights every wedge)
 WATCH_SECONDS = 6.0              # keep scanning this long after the last feed request
 
 
