@@ -5,8 +5,9 @@ identification, ordinance-based complaint reports. Repo: github.com/longblonde/B
 
 ## Where things stand
 
-- `main` is v0.14.0. The `refactor` branch is v0.15.0, a dev branch the owner tests on the Pi before
-  anything merges. Don't merge to main unless asked.
+- `main` is v0.15.0 (the `refactor` branch, merged 2026-10-30). `main` gets one squashed commit per
+  release, titled `vX.Y.Z: ...`; work happens on a dev branch the owner tests on the Pi first (they
+  call it "the test branch"). Don't merge to main unless asked.
 - The owner's questions in `docs/REFACTOR-QUESTIONS.md` are all answered (#6, labelling a whole
   discovered group, done 2026-10-30).
 - The Pi: Raspberry Pi 4 (4 GB), 64-bit Raspberry Pi OS, at 192.168.1.185, service `barktracker`

@@ -17,7 +17,7 @@ Round 1 answered on 2026-10-30 and built into the branch:
 11. Alerts: "still barking after N minutes", daily and weekly summaries, in a +/delete list.
 12. Full-screen live view shows the bearing chart with stereo.
 13. Dog detail page (Dogs > Details).
-14. Stays a dev branch.
+14. Stayed a dev branch until testing on the Pi; merged to `main` as v0.15.0 on 2026-10-30.
 15. Settings sections and the report's rules start collapsed.
 16. "I hear barking" removed from the live band (still on Tuning).
 
