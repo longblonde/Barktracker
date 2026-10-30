@@ -67,8 +67,9 @@ class DogIdentifier:
         bb = (B * B).sum(1)[None, :]
         return np.sqrt(np.maximum(aa + bb - 2 * A @ B.T, 0))
 
-    def predict(self, feats: np.ndarray) -> list[tuple[int | None, float]]:
-        """Returns (dog_id or None if unsure, confidence) per row."""
+    def predict(self, feats: np.ndarray, priors: list[dict | None] | None = None) -> list[tuple[int | None, float]]:
+        """Returns (dog_id or None if unsure, confidence) per row. `priors` (one per row, or None)
+        weighs each dog's vote, e.g. by how well the bark's direction fits where that dog barks."""
         with self._lock:
             if self.X is None or len(feats) == 0:
                 return [(None, 0.0)] * len(feats)
@@ -83,6 +84,12 @@ class DogIdentifier:
                 votes: dict[int, float] = {}
                 for j, wj in zip(idx, w):
                     votes[int(self.y[j])] = votes.get(int(self.y[j]), 0.0) + float(wj)
+                pr = priors[i] if priors is not None else None
+                if pr:
+                    votes = {d: v * pr.get(d, pr.get("other", 1.0)) for d, v in votes.items()}
+                    if not sum(votes.values()):
+                        out.append((None, 0.0))
+                        continue
                 best = max(votes, key=votes.get)
                 conf = votes[best] / sum(votes.values())
                 if d[i, idx[0]] > self.radius:
@@ -94,12 +101,55 @@ class DogIdentifier:
         return self.predict(feat[None, :])[0]
 
 
-def retrain_and_repredict(store: Store, ident: DogIdentifier) -> dict:
+MIN_DIR_BARKS = 5          # confirmed barks with a clear direction before a dog's direction counts
+DIR_FLOOR = 0.15           # weight left for a dog when a bark comes from far outside its usual direction
+DIR_UNKNOWN = 0.5          # weight for dogs whose direction isn't known yet
+
+
+def direction_priors(store: Store, ids: list[int]) -> list[dict | None] | None:
+    """For each bark: how well its direction fits where each dog usually barks from (learned only
+    from barks you labelled, so a wrong guess can't teach itself). None when there's nothing to go on."""
+    try:
+        prof = store.q(
+            "SELECT b.label_dog_id d, bd.bearing FROM barks b JOIN bark_dirs bd"
+            " ON bd.ts BETWEEN b.ts - 0.3 AND b.ts + 0.3 WHERE bd.valid=1 AND b.label_dog_id > 0")
+    except Exception:  # noqa: BLE001   no direction table yet
+        return None
+    by: dict[int, list[float]] = {}
+    for r in prof:
+        by.setdefault(int(r["d"]), []).append(r["bearing"])
+    model = {}
+    for d, v in by.items():
+        if len(v) >= MIN_DIR_BARKS:
+            a = np.array(v)
+            med = float(np.median(a))
+            spread = float(np.percentile(np.abs(a - med), 75))
+            model[d] = (med, max(8.0, 1.5 * spread))
+    if not model or not ids:
+        return None
+    # every unlabelled bark that has a direction, in one pass (no giant IN list)
+    rows = store.q("SELECT b.id, bd.bearing FROM barks b JOIN bark_dirs bd ON bd.ts BETWEEN b.ts - 0.3 AND b.ts + 0.3"
+                   " WHERE bd.valid=1 AND b.label_dog_id IS NULL")
+    bearing = {r["id"]: r["bearing"] for r in rows}
+    out: list[dict | None] = []
+    for i in ids:
+        b = bearing.get(i)
+        if b is None:
+            out.append(None)
+            continue
+        pr: dict = {d: DIR_FLOOR + (1 - DIR_FLOOR) * float(np.exp(-0.5 * ((b - m) / sg) ** 2)) for d, (m, sg) in model.items()}
+        pr["other"] = DIR_UNKNOWN                       # dogs whose direction isn't known yet
+        out.append(pr)
+    return out
+
+
+def retrain_and_repredict(store: Store, ident: DogIdentifier, use_direction: bool = False) -> dict:
     X, y = store.training_set()
     info = ident.fit(X, y)
     ids, F = store.unlabeled_features()
     if ids:
-        preds = ident.predict(F)
+        priors = direction_priors(store, ids) if use_direction else None
+        preds = ident.predict(F, priors)
         store.set_predictions([(p, c if p is not None else None, i) for i, (p, c) in zip(ids, preds)])
         # episodes whose barks all became not-a-bark get flagged (and vice versa)
         eps = {r["episode_id"] for r in store.q(

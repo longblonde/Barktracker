@@ -40,27 +40,29 @@ SPECS = {s.key: s for s in [
     Spec("clips.max_disk_mb", "int", 0, 2_000_000),
     Spec("identify.min_confidence", "float", 0.3, 0.95),
     Spec("identify.min_labels_per_dog", "int", 1, 100),
-    Spec("notify.webhook_url", "str"),
-    Spec("notify.min_duration", "float", 0, 86400),
-    Spec("ui.bark_words", "bool"),
+    Spec("identify.use_direction", "bool"),
     Spec("ui.day_nap", "bool"),
     Spec("ui.day_nap_below_dbfs", "float", -90, -10),
     Spec("ui.sound_notes", "bool"),
     Spec("ui.sound_note_min", "float", 0.3, 0.99),
-    Spec("ui.alert_color", "color"),
     Spec("audio.device", "device"),
     Spec("backup.path", "path"),
     Spec("backup.enabled", "bool"),
     Spec("backup.interval_hours", "float", 1, 720),
     Spec("backup.keep", "int", 1, 90),
     Spec("backup.include_clips", "bool"),
-    Spec("dev.array", "bool"),
-    Spec("dev.array_mode", "str"),
-    Spec("dev.array_device", "str"),
-    Spec("dev.array_spacing_cm", "float", 0.5, 2000),
-    Spec("dev.array_offset_ms", "float", -1000, 1000),
-    Spec("dev.array_swap", "bool"),
+    Spec("direction.enabled", "bool"),
+    Spec("direction.mode", "str"),
+    Spec("direction.device", "str"),
+    Spec("direction.spacing_cm", "float", 0.5, 2000),
+    Spec("direction.offset_ms", "float", -1000, 1000),
+    Spec("direction.swap", "bool"),
 ]}
+
+# saved settings from before v0.15 (the direction test lived under "dev")
+LEGACY_KEYS = {"dev.array": "direction.enabled", "dev.array_mode": "direction.mode",
+               "dev.array_device": "direction.device", "dev.array_spacing_cm": "direction.spacing_cm",
+               "dev.array_offset_ms": "direction.offset_ms", "dev.array_swap": "direction.swap"}
 
 
 def _get(cfg: Config, key: str):
@@ -96,11 +98,9 @@ def coerce(key: str, value):
         return v.rstrip("/") or None
     if s.kind == "str":
         v = (value or "").strip()
-        if key == "notify.webhook_url" and v and not v.startswith(("http://", "https://")):
-            raise ValueError("Webhook address must start with http:// or https://")
-        if key == "dev.array_mode":
+        if key == "direction.mode":
             if v not in ("stereo", "pair"):
-                raise ValueError("Array mode is stereo or pair")
+                raise ValueError("Direction mode is stereo or pair")
             return v
         return v or None
     try:
@@ -120,6 +120,11 @@ def apply_saved(cfg: Config, store) -> dict:
     """At startup: remember config.yaml values as defaults, then apply saved overrides."""
     defaults = current(cfg)
     saved = store.get_meta(META_KEY) or {}
+    if any(k in LEGACY_KEYS for k in saved):
+        for old, new in LEGACY_KEYS.items():
+            if old in saved:
+                saved.setdefault(new, saved.pop(old))
+        store.set_meta(META_KEY, saved)
     for k, v in saved.items():
         if k in SPECS:
             try:

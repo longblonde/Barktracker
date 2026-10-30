@@ -74,7 +74,7 @@ class Store:
             if "refined" not in ecols:
                 c.execute("ALTER TABLE episodes ADD COLUMN refined INTEGER NOT NULL DEFAULT 0")
             cols = {r[1] for r in c.execute("PRAGMA table_info(dogs)")}
-            for col in ("owner", "address", "description", "size"):   # migrate older databases
+            for col in ("owner", "address", "description", "size", "breed"):   # migrate older databases
                 if col not in cols:
                     c.execute(f"ALTER TABLE dogs ADD COLUMN {col} TEXT DEFAULT ''")
 
@@ -146,7 +146,7 @@ class Store:
         return self.q1("SELECT * FROM dogs WHERE id=?", (did,))
 
     def update_dog(self, dog_id: int, **fields) -> dict | None:
-        allowed = {k: v for k, v in fields.items() if k in ("name", "color", "notes", "owner", "address", "description", "size") and v is not None}
+        allowed = {k: v for k, v in fields.items() if k in ("name", "color", "notes", "owner", "address", "description", "size", "breed") and v is not None}
         if allowed:
             with self.tx() as c:
                 sets = ", ".join(f"{k}=?" for k in allowed)

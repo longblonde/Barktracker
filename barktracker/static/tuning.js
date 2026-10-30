@@ -1,7 +1,6 @@
 "use strict";
-// Tuning: a live view of what the detector hears and decides, "I hear barking" captures, and
-// what-if settings. Loaded before app.js; everything here runs only when called from the router,
-// so it can use app.js helpers (api, $, esc, toast, view, route, S, LUT, dogColor, dogName...).
+// Detection and tuning: a live view of what the microphone(s) hear and what the detector decides,
+// a bearing chart when two microphones are in use, "I hear barking" captures, and what-if levels.
 
 const TUNE = {
   FRAME_S: 0.05,
@@ -85,54 +84,56 @@ function wireWhatIf(root, cur, onChange) {
   };
 }
 
-// --------------------------------------------------------------- "I hear barking"
-async function hearBarking(seconds = 30) {
-  try {
-    const r = await api("/api/missed", { method: "POST", body: { seconds } });
-    toastLink(`Saved the last ${seconds} s for review`, `#/missed/${r.id}`, "Review");
-    return r.id;
-  } catch (e) { toast(e.message); return null; }
-}
-function toastLink(msg, href, label) {
-  const t = $("#toast");
-  t.innerHTML = `${esc(msg)} <a href="${href}">${esc(label)}</a>`;
-  t.classList.add("show", "has-link");
-  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show", "has-link"), 6000);
-}
+// --------------------------------------------------------------- the Tuning page
+// What the microphone(s) hear right now and why each sound was or wasn't counted. With two
+// microphones (Settings > Microphone: Stereo or Two microphones) a bearing chart sits on top: the
+// live band's EQ wrapped around a half-circle, one bar per wedge of direction, as tall as the
+// sound coming from that way is loud over the background.
+const POLAR = { RISE_FULL: 36, SEGS: 12, MARKS: 12 };
 
-// --------------------------------------------------------------- live tuning page
 async function renderTune() {
-  clearTimeout(S.tuneTimer);
-  const [sug, pool] = await Promise.all([api("/api/tuning/suggest"), api("/api/missed"), loadDogs()]);
+  const [sug, pool, st] = await Promise.all([api("/api/tuning/suggest"), api("/api/missed"), api("/api/settings"), loadDogs()]);
   if (route.name !== "tune") return;
+  const v = st.values, dirOn = !!v["direction.enabled"], pair = v["direction.mode"] === "pair";
   const cur = { ...sug.current };
   view.innerHTML = `
     <section class="tune-head">
-      <div><h1>Tuning</h1>
-        <p class="sub">What the Pi hears right now, and why each sound was or wasn't counted. Every sound has to pass three checks: loud enough over the background, bark-like to the sound model, and not matching a clip you marked “Not a bark”.</p></div>
+      <div><h1>Detection and tuning</h1>
+        <p class="sub">What the Pi hears right now, and why each sound was or wasn't counted. A sound has to pass three checks: loud enough over the background, bark-like to the sound model, and not like a clip you marked “Not a bark”.</p>
+        <p class="small muted">Microphone: <strong>${esc(st.info.audio_device || "none")}</strong>, ${dirOn ? (pair ? "two microphones (direction on)" : "stereo (direction on)") : "mixed to mono"}. <a href="#/settings/mic">Change</a></p></div>
       <div class="hear">
         <button class="btn primary big" id="hearNow">I hear barking</button>
         <label class="small muted">Save the last <select id="hearSecs"><option>15</option><option selected>30</option><option>60</option></select> seconds</label>
       </div>
     </section>
+    ${dirOn ? `<section class="panel polar-panel">
+      <div class="row spread"><h2>Bearing</h2><span class="small muted" id="arrStatus"></span></div>
+      <div class="polar-wrap"><canvas id="polar" class="polar" aria-label="Sound by direction: one bar per wedge, taller when louder over the background"></canvas></div>
+      <div class="row spread polar-ctl">
+        <div class="legend"><span style="--c:var(--ink)">Sound over the background</span><span style="--c:var(--alert)">While barking</span><span class="nodot"><i class="mkkey"></i>Numbered: sounds the detector decided about</span></div>
+        <span class="seg" role="radiogroup" aria-label="Wedge size">${[10, 15, 30].map((w) => `<button type="button" role="radio" data-wedge="${w}" aria-checked="${(S.wedge || 10) === w}">${w}°</button>`).join("")}</span>
+      </div>
+      <p class="small muted" style="margin:6px 0 0">0° points at mic A, 180° at mic B, 90° straight ahead (or behind: two microphones can't tell front from back, so mount them against a wall). ${pair ? "" : "Clap at each end of the microphone to check the sides: mic A's end should light near 0°."}</p>
+      ${pair ? `<div class="row calib"><span class="small"><strong>Two microphones run on separate clocks.</strong> Stand straight ahead, halfway between them, press Calibrate and clap once.</span>
+        <button class="btn" id="arrCal">Calibrate</button><button class="btn" id="arrCalClear">Clear</button><span class="small muted" id="arrCalState"></span></div>` : ""}
+    </section>` : ""}
     <section class="panel tl-panel">
       <div class="row spread"><h2>Live</h2><span class="small muted" id="tuneStatus">Connecting…</span></div>
       <div class="tl" id="tl">
         <canvas class="tl-spec" id="tlSpec" aria-label="Live spectrogram, low pitch at the bottom"></canvas>
         <div class="tl-lane" id="tlLane" aria-label="What the detector decided"></div>
         <canvas class="tl-level" id="tlLevel" aria-label="Sound level, background and trigger"></canvas>
-        <div class="tl-cursor" id="tlCursor" hidden></div>
       </div>
       <div class="tl-axis"><span id="tlStart">−60 s</span><span>now</span></div>
       <div class="legend tl-legend">
-        ${Object.entries(TUNE.KINDS).filter(([k]) => k !== "unscored").map(([k, v]) => `<span style="--c:${v.color}">${v.label}</span>`).join("")}
+        ${Object.entries(TUNE.KINDS).filter(([k]) => k !== "unscored").map(([k, x]) => `<span style="--c:${x.color}">${x.label}</span>`).join("")}
         <span class="nodot"><i class="ln ln-level"></i>Level</span><span class="nodot"><i class="ln ln-floor"></i>Background</span>
         <span class="nodot"><i class="ln ln-trig"></i>Trigger</span><span class="nodot"><i class="ln ln-min"></i>Ignore below</span>
       </div>
-      <div class="tl-detail" id="tlDetail" aria-live="polite"><span class="muted">Point at (or tap) a tag to see why the detector decided what it did.</span></div>
+      <div class="tl-detail" id="tlDetail" aria-live="polite"><span class="muted">Point at (or tap) a tag to see why the detector decided what it did${dirOn ? " and where it came from" : ""}.</span></div>
     </section>
     <section class="grid2 tune-grid">
-      <div class="panel"><h2>Try settings</h2><p class="small muted intro">Tags above recolor to show what would have been counted in the last minute.</p>
+      <div class="panel"><h2>Detection levels</h2><p class="small muted intro">Tags above recolor to show what would have been counted in the last minute. Nothing changes until you press Use these settings.</p>
         <div id="whatIf">${whatIfHtml(cur)}</div>
         <p class="small" id="wiSummary"></p></div>
       <div class="panel" id="sugPanel">${suggestHtml(sug)}</div>
@@ -145,78 +146,124 @@ async function renderTune() {
 
   $("#hearNow").onclick = async () => {
     const id = await hearBarking(Number($("#hearSecs").value));
-    if (id) { const p = await api("/api/missed"); if (route.name === "tune") view.querySelector(".pool").outerHTML = poolList(p.items); }
+    if (id) { const p = await api("/api/missed"); if (route.name === "tune") { view.querySelector(".pool").outerHTML = poolList(p.items); wirePool(); } }
   };
   wireSuggest(cur);
-  const live = { cols: [], last: -1, ev: [], since: 0, first: true, settings: cur, floor: null };
-  const gen = S.tuneGen = (S.tuneGen || 0) + 1;     // a newer visit to the page stops this one's loop
-  S.tuneLive = live;
+  const live = { last: -1, ev: [], since: 0, settings: cur, frame: 800 };
+  let alive = true;
+  LOOPS.add(() => { alive = false; });
   wireWhatIf($("#whatIf"), cur, () => { drawTimeline(); summarize(); });
   wirePool();
 
+  // ---- direction: estimates per sound (numbered) and the live wedge scan
+  const dir = { since: 0, scansSince: 0, byId: new Map(), list: [], status: null };
+  const polar = dirOn ? makePolar($("#polar")) : null;
+  if (polar) LOOPS.add(() => polar.stop());
+  view.querySelectorAll("[data-wedge]").forEach((b) => b.onclick = () => {
+    S.wedge = Number(b.dataset.wedge);
+    view.querySelectorAll("[data-wedge]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+    polar?.setWedge(S.wedge);
+  });
+  const cal = $("#arrCal");
+  if (cal) {
+    cal.onclick = async () => { try { await api("/api/array/calibrate", { method: "POST", body: {} }); toast("Now clap once, straight ahead"); } catch (e) { toast(e.message); } };
+    $("#arrCalClear").onclick = async () => { try { await api("/api/array/calibrate", { method: "POST", body: { clear: true } }); toast("Calibration cleared"); } catch (e) { toast(e.message); } };
+  }
+
   const spec = $("#tlSpec"), lvl = $("#tlLevel"), lane = $("#tlLane"), detail = $("#tlDetail");
-  const off = document.createElement("canvas");          // 1 px per 50 ms frame, 64 rows
   const N = Math.round(TUNE.WINDOW_S / TUNE.FRAME_S);
+  const off = document.createElement("canvas");          // 1 px per 50 ms frame, 64 rows
   off.width = N; off.height = 64;
   const octx = off.getContext("2d");
   octx.fillStyle = "rgb(15,20,24)"; octx.fillRect(0, 0, N, 64);
-  let frames = [];                                       // [{idx, level, floor}] newest last
+  let frames = [];
 
   async function poll() {
-    if (gen !== S.tuneGen) return;
-    if (route.name !== "tune" || document.hidden) { if (route.name === "tune") S.tuneTimer = setTimeout(poll, 1000); return; }
+    if (!alive) return;
+    if (document.hidden) { S.tuneTimer = setTimeout(poll, 1000); return; }
     try {
-      const f = await api(`/api/tuning/feed?since_idx=${live.last}&since_event=${live.since}`);
+      const [f, a] = await Promise.all([
+        api(`/api/tuning/feed?since_idx=${live.last}&since_event=${live.since}`),
+        dirOn ? api(`/api/array/feed?since=${dir.since}&scans_since=${dir.scansSince}`) : null]);
+      if (!alive) return;
+      if (a) {
+        dir.status = a.status;
+        for (const e of a.events) { dir.byId.set(e.id, e); dir.list.push(e); }
+        if (a.events.length) dir.since = a.events[a.events.length - 1].n;
+        if (dir.list.length > 200) { for (const e of dir.list.splice(0, dir.list.length - 200)) dir.byId.delete(e.id); }
+        for (const sc of a.scans) polar.hit(sc[1], sc[2], sc[3]);
+        if (a.scans.length) dir.scansSince = a.scans[a.scans.length - 1][0];
+        polar.marks(dir.list.filter((e) => e.valid).slice(-POLAR.MARKS), live.selId);
+        drawArrStatus(dir.status);
+      }
       if (!f.listening) { $("#tuneStatus").textContent = "Not listening: started without a microphone"; S.tuneTimer = setTimeout(poll, 3000); return; }
       live.settings = f.settings; Object.assign(cur, { trigger_db: f.settings.trigger_db, min_level: f.settings.min_level, threshold: f.settings.threshold });
       const raw = atob(f.cols || ""), n = f.levels.length;
       if (n) {
-        // scroll the offscreen spectrogram left and paint the new columns on the right
         const k = Math.min(n, N);
         octx.drawImage(off, k, 0, N - k, 64, 0, 0, N - k, 64);
         const img = octx.createImageData(k, 64);
         for (let c = n - k; c < n; c++) {
           for (let r = 0; r < 64; r++) {
-            const v = raw.charCodeAt(c * 64 + r) * 3, px = ((63 - r) * k + (c - (n - k))) * 4;
-            img.data[px] = LUT[v]; img.data[px + 1] = LUT[v + 1]; img.data[px + 2] = LUT[v + 2]; img.data[px + 3] = 255;
+            const val = raw.charCodeAt(c * 64 + r) * 3, px = ((63 - r) * k + (c - (n - k))) * 4;
+            img.data[px] = LUT[val]; img.data[px + 1] = LUT[val + 1]; img.data[px + 2] = LUT[val + 2]; img.data[px + 3] = 255;
           }
         }
         octx.putImageData(img, N - k, 0);
         for (let c = 0; c < n; c++) frames.push({ idx: f.first_idx + c * f.frame, level: f.levels[c][0], floor: f.levels[c][1] });
         if (frames.length > N) frames = frames.slice(frames.length - N);
-        live.last = f.last_idx; live.frame = f.frame; live.sr = f.sr;
+        live.last = f.last_idx; live.frame = f.frame;
       }
       for (const e of f.events) if (!e.soft) live.ev.push(e);
       if (f.events.length) live.since = f.events[f.events.length - 1].id;
-      const oldest = live.last - N * (live.frame || 800);
-      live.ev = live.ev.filter((e) => e.idx > oldest);
-      if (live.ev.length > 400) live.ev = live.ev.slice(-400);   // a noisy minute can't pile up
+      live.ev = live.ev.filter((e) => e.idx > live.last - N * live.frame);
+      if (live.ev.length > 400) live.ev = live.ev.slice(-400);       // a noisy minute can't pile up
       $("#tuneStatus").textContent = `Background ${Math.round(f.floor)} dBFS · trigger at ${Math.round(f.trigger_level)} dBFS${f.pending_review ? ` · ${f.pending_review} capture${f.pending_review === 1 ? "" : "s"} to review` : ""}`;
       drawTimeline(); summarize();
     } catch (_) { $("#tuneStatus").textContent = "Can't reach the Pi; retrying…"; }
-    if (gen === S.tuneGen) S.tuneTimer = setTimeout(poll, 250);
+    if (alive) S.tuneTimer = setTimeout(poll, 250);
+  }
+  LOOPS.add(() => clearTimeout(S.tuneTimer));
+
+  function drawArrStatus(s) {
+    const el = $("#arrStatus"); if (!el || !s) return;
+    const bits = s.mode === "stereo"
+      ? [s.stereo_live ? `stereo, ${s.main_channels} ch at ${Math.round(s.main_rate / 1000)} kHz` : s.main_channels === 1 ? "this microphone is mono: choose a stereo one, or Two microphones" : "waiting for stereo audio"]
+      : [s.second_live ? `second mic ${s.second_name} at ${Math.round(s.second_rate / 1000)} kHz` : s.device_b ? `opening ${s.device_b}…` : "choose the second microphone in Settings", s.offset_ms ? `calibrated (${s.offset_ms} ms)` : "not calibrated"];
+    bits.push(`${s.spacing_cm} cm apart`);
+    el.textContent = bits.join(" · ") + (s.error ? ` · ${s.error}` : "");
+    const cs = $("#arrCalState"); if (cs) cs.textContent = s.calibrating ? "Listening for the clap…" : s.offset_ms ? `Offset ${s.offset_ms} ms` : "Not calibrated yet";
   }
 
   function xOf(idx, W) { return W - ((live.last - idx) / (live.frame || 800)) * (W / N); }
+  let tcol = null, tcolAt = 0;
+  function timelineColors() {
+    const now = performance.now();
+    if (!tcol || now - tcolAt > 2000) {
+      tcol = { danger: cssVar("--danger"), muted: cssVar("--muted"), caution: cssVar("--caution"), ink: cssVar("--ink"),
+               font: getComputedStyle(document.body).fontFamily };
+      tcolAt = now;
+    }
+    return tcol;
+  }
+  let laneKey = "";
   function drawTimeline() {
     const s = tuneSettings(cur), dpr = window.devicePixelRatio || 1;
     const W = spec.clientWidth;
     if (!W) return;
-    // spectrogram
     const H1 = spec.clientHeight;
     if (spec.width !== Math.round(W * dpr)) { spec.width = Math.round(W * dpr); spec.height = Math.round(H1 * dpr); }
     const sc = spec.getContext("2d");
     sc.imageSmoothingEnabled = true;
     sc.drawImage(off, 0, 0, spec.width, spec.height);
-    // level graph: -90..-10 dBFS
     const H2 = lvl.clientHeight;
     if (lvl.width !== Math.round(W * dpr)) { lvl.width = Math.round(W * dpr); lvl.height = Math.round(H2 * dpr); }
     const lc = lvl.getContext("2d");
     lc.setTransform(dpr, 0, 0, dpr, 0, 0);
     lc.clearRect(0, 0, W, H2);
-    const css = getComputedStyle(document.body);
     const y = (db) => H2 - 4 - ((Math.max(-90, Math.min(-10, db)) + 90) / 80) * (H2 - 8);
-    lc.font = `11px ${css.fontFamily}`; lc.fillStyle = css.getPropertyValue("--muted");
+    const tc0 = timelineColors();
+    lc.font = `11px ${tc0.font}`; lc.fillStyle = tc0.muted;
     for (const db of [-80, -60, -40, -20]) {
       lc.globalAlpha = 0.35; lc.fillRect(0, Math.round(y(db)), W, 1); lc.globalAlpha = 1;
       lc.fillText(`${db}`, 2, y(db) - 2);
@@ -225,43 +272,47 @@ async function renderTune() {
       lc.beginPath(); lc.setLineDash(dash); lc.strokeStyle = color; lc.lineWidth = width;
       let started = false;
       frames.forEach((fr) => {
-        const v = vals(fr); if (v == null) { started = false; return; }
-        const xx = xOf(fr.idx, W), yy = y(v);
+        const val = vals(fr); if (val == null) { started = false; return; }
+        const xx = xOf(fr.idx, W), yy = y(val);
         if (!started) { lc.moveTo(xx, yy); started = true; } else lc.lineTo(xx, yy);
       });
       lc.stroke(); lc.setLineDash([]);
     };
-    line(() => s.min_level, css.getPropertyValue("--danger"), [2, 4], 1);
-    line((fr) => fr.floor, css.getPropertyValue("--muted"), [5, 4]);
-    line((fr) => fr.floor == null ? null : Math.max(fr.floor + s.trigger_db, s.min_level), css.getPropertyValue("--caution"), [], 1.5);
-    line((fr) => fr.level, css.getPropertyValue("--ink"), [], 1.2);
-    // decision tags
+    const tc = timelineColors();
+    line(() => s.min_level, tc.danger, [2, 4], 1);
+    line((fr) => fr.floor, tc.muted, [5, 4]);
+    line((fr) => fr.floor == null ? null : Math.max(fr.floor + s.trigger_db, s.min_level), tc.caution, [], 1.5);
+    line((fr) => fr.level, tc.ink, [], 1.2);
     let right = -Infinity;                        // tags that would overlap the previous one shrink to dots
+    const key = `${live.ev.length}:${live.ev[live.ev.length - 1]?.id}:${Math.round(live.last / ((live.frame || 800) * 4))}:${live.selId}:${JSON.stringify(S.whatIf)}:${dir.list.length}:${W}`;
+    if (key === laneKey) return;
+    laneKey = key;
     lane.innerHTML = live.ev.slice(-150).map((e) => {
-      const v = tuneVerdict(e, s), k = TUNE.KINDS[v.kind], x = xOf(e.idx, W);
+      const vd = tuneVerdict(e, s), k = TUNE.KINDS[vd.kind], x = xOf(e.idx, W);
       if (x < 0) return "";
-      const changed = S.whatIf && tuneVerdict(e, live.settings).kind !== v.kind;
-      const txt = v.kind === "bark" ? (e.prob != null ? `${Math.round(e.prob * 100)}%` : "bark")
-        : v.kind === "not_bark" ? (e.other && (e.other_score || 0) >= 0.5 ? e.other.split(",")[0].toLowerCase() : `${Math.round((e.prob || 0) * 100)}%`)
-        : v.kind === "quiet" ? `+${Math.max(0, e.rise || 0).toFixed(0)} dB` : k.short;
+      const changed = S.whatIf && tuneVerdict(e, live.settings).kind !== vd.kind;
+      const de = dir.byId.get(e.id);
+      let txt = vd.kind === "bark" ? (e.prob != null ? `${Math.round(e.prob * 100)}%` : "bark")
+        : vd.kind === "not_bark" ? (e.other && (e.other_score || 0) >= 0.5 ? e.other.split(",")[0].toLowerCase() : `${Math.round((e.prob || 0) * 100)}%`)
+        : vd.kind === "quiet" ? `+${Math.max(0, e.rise || 0).toFixed(0)} dB` : k.short;
+      if (de) txt = `#${de.n} ${de.valid ? Math.round(de.angle) + "°" : "?"}${vd.kind === "bark" ? "" : " " + txt}`;
       const w = txt.length * 6.5 + 14, dot = x - w / 2 < right + 3;
       right = dot ? Math.max(right, x + 6) : x + w / 2;
-      return `<button type="button" class="tag-ev k-${v.kind}${changed ? " changed" : ""}${dot ? " dot" : ""}${e.id === live.selId ? " sel" : ""}" data-id="${e.id}" style="left:${x}px;--c:${k.color}" aria-label="${esc(k.label)}: ${esc(txt)}" title="${esc(txt)}">${esc(txt)}</button>`;
+      return `<button type="button" class="tag-ev k-${vd.kind}${changed ? " changed" : ""}${dot ? " dot" : ""}${e.id === live.selId ? " sel" : ""}" data-id="${e.id}" style="left:${x}px;--c:${k.color}" aria-label="${esc(k.label)}: ${esc(txt)}" title="${esc(txt)}">${esc(txt)}</button>`;
     }).join("");
     if (live.selId) showDetail(live.selId, false);
-    const span = Math.round(N * TUNE.FRAME_S);
-    $("#tlStart").textContent = `−${span} s`;
+    $("#tlStart").textContent = `−${Math.round(N * TUNE.FRAME_S)} s`;
   }
-  // tags move every refresh, so pointing and clicking go through the lane (and a click keeps it)
   function showDetail(id, select = true) {
     const e = live.ev.find((x) => x.id === id);
     if (!e) return;
-    if (select) live.selId = id;
-    const s = tuneSettings(cur), v = tuneVerdict(e, s), was = tuneVerdict(e, live.settings);
-    detail.innerHTML = `<div><strong>${fmtTimeS(e.ts)}</strong> <span class="kind-pill" style="--c:${TUNE.KINDS[v.kind].color}">${TUNE.KINDS[v.kind].label}</span>
+    if (select) { live.selId = id; polar?.marks(dir.list.filter((x) => x.valid).slice(-POLAR.MARKS), id); }
+    const s = tuneSettings(cur), vd = tuneVerdict(e, s), was = tuneVerdict(e, live.settings), de = dir.byId.get(e.id);
+    detail.innerHTML = `<div><strong>${fmtTimeS(e.ts)}</strong> <span class="kind-pill" style="--c:${TUNE.KINDS[vd.kind].color}">${TUNE.KINDS[vd.kind].label}</span>
         ${live.selId === id ? `<button type="button" class="linkish small" id="tlUnpin">Clear</button>` : ""}</div>
-      <div>${esc(v.why[0].toUpperCase() + v.why.slice(1))}.${S.whatIf && was.kind !== v.kind ? ` With the saved settings: ${esc(was.why)}.` : ""}</div>
-      <div class="small muted">${esc(tuneEventFacts(e))}${e.kind === "bark" && e.dog ? ` · ${esc(dogName(String(e.dog)))}` : ""}</div>`;
+      <div>${esc(vd.why[0].toUpperCase() + vd.why.slice(1))}.${S.whatIf && was.kind !== vd.kind ? ` With the saved settings: ${esc(was.why)}.` : ""}</div>
+      <div class="small muted">${esc(tuneEventFacts(e))}${e.kind === "bark" && e.dog ? ` · ${esc(dogName(String(e.dog)))}` : ""}</div>
+      ${de ? `<div class="small muted">#${de.n}: ${de.valid ? `from about <strong>${Math.round(de.angle)}°</strong>` : `no clear direction (best guess ${Math.round(de.angle)}°)`}; mic B heard it ${Math.abs(Math.round(de.tau_us))} µs ${de.tau_us >= 0 ? "after" : "before"} mic A, clarity ${de.sharp}; level A ${Math.round(de.level_a)}, B ${Math.round(de.level_b)} dBFS.</div>` : ""}`;
     const u = $("#tlUnpin"); if (u) u.onclick = () => { live.selId = null; detail.innerHTML = `<span class="muted">Point at (or tap) a tag to see why the detector decided what it did.</span>`; drawTimeline(); };
   }
   lane.addEventListener("pointermove", (ev) => {
@@ -274,7 +325,7 @@ async function renderTune() {
   });
   function summarize() {
     const el = $("#wiSummary"); if (!el) return;
-    const s = tuneSettings(cur), count = (st) => live.ev.filter((e) => tuneVerdict(e, st).kind === "bark").length;
+    const s = tuneSettings(cur), count = (stt) => live.ev.filter((e) => tuneVerdict(e, stt).kind === "bark").length;
     const now = count(live.settings), then = count(s);
     const quiet = live.ev.filter((e) => tuneVerdict(e, s).kind === "quiet").length;
     const nb = live.ev.filter((e) => tuneVerdict(e, s).kind === "not_bark").length;
@@ -282,9 +333,133 @@ async function renderTune() {
       ? `In the last minute: <strong>${then}</strong> sound${then === 1 ? "" : "s"} counted as barks${S.whatIf ? ` (${now} with the saved settings)` : ""}, ${quiet} too quiet to check, ${nb} not bark-like enough.`
       : `<span class="muted">No sounds over the background in the last minute.</span>`;
   }
-  S.tuneResize = drawTimeline;                       // one resize handler, whichever visit is current
-  if (!S.tuneResizeWired) { S.tuneResizeWired = true; window.addEventListener("resize", () => { if (route.name === "tune" && S.tuneResize) S.tuneResize(); }); }
+  const onResize = () => drawTimeline();
+  window.addEventListener("resize", onResize);
+  LOOPS.add(() => window.removeEventListener("resize", onResize));
   poll();
+}
+
+// The bearing chart: an LED-segment bar per wedge of direction, like the live band's EQ bent
+// around a half-circle. Bars jump up with a sound and fall back under gravity; the top segment
+// is a peak cap that hangs for a moment. Bars turn the alert color while barking.
+function makePolar(canvas) {
+  const reduceMQ = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const calm = () => reduceMQ.matches || document.documentElement.dataset.motion === "reduced";
+  let wedge = S.wedge || 10, bars = [], marks = [], sel = null, last = performance.now(), running = true, raf = 0;
+  const reset = () => { bars = Array.from({ length: Math.round(180 / wedge) }, () => ({ h: 0, peak: 0, hold: 0, v: 0, barkUntil: 0 })); };
+  reset();
+  function hit(angle, rise, barking) {
+    const i = Math.min(bars.length - 1, Math.max(0, Math.floor(angle / wedge)));
+    const b = bars[i], t = Math.min(1, Math.max(0, rise / POLAR.RISE_FULL));
+    if (t > b.h) b.h = t;
+    if (barking) b.barkUntil = performance.now() + 1500;
+  }
+  // theme colors, read once a second rather than every frame (style lookups are slow on a Pi)
+  let colors = null, colorsAt = 0, idleFrames = 0, lastDraw = 0;
+  const readColors = (now) => {
+    if (!colors || now - colorsAt > 1000) {
+      colors = { ink: cssVar("--ink"), faint: cssVar("--faint"), muted: cssVar("--muted"), alert: cssVar("--alert") || "#e8a800",
+                 font: getComputedStyle(document.body).fontFamily, kinds: {} };
+      for (const [k, v] of Object.entries(TUNE.KINDS)) colors.kinds[k] = resolveColor(v.color);
+      colorsAt = now;
+    }
+    return colors;
+  };
+  let dirty = true;
+  function frame(now) {
+    if (!running) return;
+    if (now - lastDraw < 32 && !calm()) { raf = requestAnimationFrame(frame); return; }      // at most ~30 fps
+    lastDraw = now;
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    const moving = bars.some((b) => b.h > 0 || b.peak > 0);
+    idleFrames = moving || dirty ? 0 : idleFrames + 1;
+    if (W && H && idleFrames < 2) {                     // nothing moving: leave the last picture up
+      dirty = false;
+      if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
+      const g = canvas.getContext("2d", { alpha: true }); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+      const c = readColors(now), font = c.font, ink = c.ink, faint = c.faint, muted = c.muted, alert = c.alert;
+      const cx = W / 2, cy = H - 26, R = Math.max(40, Math.min(W / 2 - 46, H - 52)), r0 = R * 0.2;
+      const S_ = POLAR.SEGS, gap = Math.max(2, R / 70), segH = (R - r0 - gap * (S_ - 1)) / S_;
+      const pad = Math.min(2.2, wedge * 0.12);          // degrees of gap between wedges
+      const cr = Math.min(2.5, segH / 3, (r0 * (wedge - pad) * Math.PI) / 720);   // corners like the live EQ's cells
+      const at = (rho, t) => [cx + Math.cos(t) * rho, cy + Math.sin(t) * rho];
+      const turn = ([x, y], a, b) => {                 // a corner: the short way round a circle of radius cr
+        let d = b - a;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d <= -Math.PI) d += 2 * Math.PI;
+        g.arc(x, y, cr, a, a + d, d < 0);
+      };
+      const toward = ([x, y], [px, py]) => Math.atan2(py - y, px - x);
+      const arc = (a0, a1, ri, ro) => {                // an annular sector with rounded corners; 0 deg = left (mic A)
+        const t0 = Math.PI + (a0 * Math.PI) / 180, t1 = Math.PI + (a1 * Math.PI) / 180;
+        g.beginPath();
+        if (cr < 0.5) { g.arc(cx, cy, ro, t0, t1); g.arc(cx, cy, ri, t1, t0, true); }
+        else {
+          // each corner circle touches a straight side and a curved edge; po/pi: its centre's radius
+          const po = ro - cr, pi = ri + cr, so = Math.asin(cr / po), si = Math.asin(cr / pi);
+          const eo = Math.sqrt(po * po - cr * cr), ei = Math.sqrt(pi * pi - cr * cr);   // where it meets the side
+          const c00 = at(pi, t0 + si), c01 = at(po, t0 + so), c11 = at(po, t1 - so), c10 = at(pi, t1 - si);
+          g.moveTo(...at(ei, t0));
+          g.lineTo(...at(eo, t0)); turn(c01, toward(c01, at(eo, t0)), t0 + so);
+          g.arc(cx, cy, ro, t0 + so, t1 - so); turn(c11, t1 - so, toward(c11, at(eo, t1)));
+          g.lineTo(...at(ei, t1)); turn(c10, toward(c10, at(ei, t1)), t1 - si + Math.PI);
+          g.arc(cx, cy, ri, t1 - si, t0 + si, true); turn(c00, t0 + si + Math.PI, toward(c00, at(ei, t0)));
+        }
+        g.closePath(); g.fill();
+      };
+      bars.forEach((b, i) => {
+        if (calm()) { b.peak = Math.max(b.h, b.peak - 0.6 * dt); }
+        else {
+          b.h = Math.max(0, b.h - 1.1 * dt);
+          if (b.h >= b.peak) { b.peak = b.h; b.hold = 0.5; b.v = 0; }
+          else if (b.hold > 0) b.hold -= dt;
+          else { b.v += 2.0 * dt; b.peak = Math.max(b.h, b.peak - b.v * dt); }
+        }
+        const lit = Math.round(b.h * S_), top = b.peak > 0.04 || lit > 0 ? Math.min(S_ - 1, Math.max(lit - 1, Math.floor(b.peak * S_))) : -1;
+        const on = b.barkUntil > now ? alert : ink;
+        for (let j = 0; j < S_; j++) {
+          const ri = r0 + j * (segH + gap);
+          if (j === top) { g.fillStyle = on; g.globalAlpha = 1; }
+          else if (j < lit) { g.fillStyle = on; g.globalAlpha = 0.55; }
+          else { g.fillStyle = faint; g.globalAlpha = 1; }
+          arc(i * wedge + pad / 2, (i + 1) * wedge - pad / 2, ri, ri + segH);
+        }
+      });
+      if (calm() && bars.some((b) => b.h > 0)) bars.forEach((b) => { b.h = Math.max(0, b.h - 0.6 * dt); });
+      g.globalAlpha = 1;
+      // degree labels
+      g.font = `11px ${font}`; g.fillStyle = muted; g.textAlign = "center";
+      for (let a = 0; a <= 180; a += 30) {
+        const t = Math.PI + (a * Math.PI) / 180, x = cx + Math.cos(t) * (R + 30), y = cy + Math.sin(t) * (R + 30);
+        g.fillText(`${a}°`, x, y + 4);
+      }
+      g.textAlign = "left"; g.fillText("Mic A", 4, cy + 18);
+      g.textAlign = "right"; g.fillText("Mic B", W - 4, cy + 18);
+      g.textAlign = "center"; g.fillText("ahead", cx, cy + 18);
+      // numbered sounds just outside the bars, newest boldest
+      marks.forEach((e, i) => {
+        const age = marks.length - 1 - i, t = Math.PI + (e.angle * Math.PI) / 180;
+        const x = cx + Math.cos(t) * (R + 14), y = cy + Math.sin(t) * (R + 14);
+        g.globalAlpha = Math.max(0.3, 1 - age / POLAR.MARKS);
+        g.beginPath(); g.arc(x, y, e.id === sel ? 9 : 7.5, 0, 2 * Math.PI);
+        g.fillStyle = c.kinds[e.kind] || muted; g.fill();
+        if (e.id === sel) { g.lineWidth = 2; g.strokeStyle = ink; g.stroke(); }
+        g.fillStyle = "#fff"; g.font = `600 9px ${font}`; g.fillText(String(e.n % 100), x, y + 3);
+      });
+      g.globalAlpha = 1;
+    }
+    if (calm()) raf = setTimeout(() => frame(performance.now()), 250); else raf = requestAnimationFrame(frame);
+  }
+  raf = requestAnimationFrame(frame);
+  return {
+    hit(a, r, b) { hit(a, r, b); dirty = true; }, setWedge(w) { wedge = w; reset(); dirty = true; },
+    marks(list, selected) {
+      const key = list.map((e) => e.n).join(",") + "|" + selected;
+      if (key !== marks.key) { marks = list; marks.key = key; sel = selected ?? null; dirty = true; }
+    },
+    stop() { running = false; cancelAnimationFrame(raf); clearTimeout(raf); },
+  };
 }
 
 function suggestHtml(sug) {
@@ -320,7 +495,7 @@ function poolList(items) {
   if (!items.length) return `<div class="list pool"><div class="empty"><strong>No captures yet</strong>When you hear barking the Pi didn't pick up, press “I hear barking” here or in the live band.</div></div>`;
   const st = { new: ["To review", "new"], added: ["Added to the log", ""], dismissed: ["No barking", ""] };
   return `<div class="list pool">${items.map((m) => `
-    <a class="ep pool-row" href="#/missed/${m.id}">
+    <a class="ep pool-row" href="#/tune/capture/${m.id}">
       <span></span>
       <span class="when">${fmtTime(m.start_ts)}<span class="day">${fmtDay(m.start_ts)}</span></span>
       <span class="dur">${Math.round(m.seconds)} s</span>
@@ -338,17 +513,17 @@ function wirePool() {
 }
 
 // --------------------------------------------------------------- reviewing one capture
-async function renderMissed() {
+async function renderCapture() {
   clearTimeout(S.tuneTimer);
   const id = Number(route.arg);
   const qs = S.whatIf ? `?${new URLSearchParams(Object.entries(S.whatIf).map(([k, v]) => [k, String(v)]))}` : "";
   let m;
   try { [m] = await Promise.all([api(`/api/missed/${id}${qs}`), loadDogs()]); }
   catch (e) { view.innerHTML = `<div class="notice err">${esc(e.message)}</div>`; return; }
-  if (route.name !== "missed") return;
+  if (route.name !== "capture") return;
   if (!m.analyzed && m.status === "new") {
-    view.innerHTML = `<section><a href="#/tune" class="small">Tuning</a><h1>Scoring the sounds…</h1><p class="sub">Every sound in the capture is measured and checked the way the detector does it. This takes a few seconds.</p></section>`;
-    S.tuneTimer = setTimeout(() => { if (route.name === "missed") renderMissed(); }, 1200);
+    view.innerHTML = `<section><a href="#/tune" class="small">Detection and tuning</a><h1>Scoring the sounds…</h1><p class="sub">Every sound in the capture is measured and checked the way the detector does it. This takes a few seconds.</p></section>`;
+    S.tuneTimer = setTimeout(() => { if (route.name === "capture") renderCapture(); }, 1200);
     return;
   }
   const cur = { ...m.current };
@@ -360,11 +535,11 @@ async function renderMissed() {
   const dogs = Object.values(S.dogs);
   view.innerHTML = `
     <section>
-      <div class="row spread" style="margin-bottom:14px"><a href="#/tune" class="small">Tuning</a>
-        ${m.next_new ? `<a class="btn" href="#/missed/${m.next_new}">Next capture to review</a>` : ""}</div>
+      <div class="row spread" style="margin-bottom:14px"><a href="#/tune" class="small">Detection and tuning</a>
+        ${m.next_new ? `<a class="btn" href="#/tune/capture/${m.next_new}">Next capture to review</a>` : ""}</div>
       <h1>Heard at ${fmtTimeS(m.start_ts + len)}</h1>
       <p class="sub">${Math.round(len)} seconds saved by “I hear barking” on ${fmtDay(m.start_ts)}.
-        ${m.status === "added" ? `Added to the log: <a href="#/clip/${m.episode_id}">open the clip</a>.` : m.status === "dismissed" ? "You marked this as no barking; the audio was deleted, and its measurements still help the suggestions." : "Select the barks the Pi missed, then add them under the right dog."}</p>
+        ${m.status === "added" ? `Added to the log: <a href="#/clips/${m.episode_id}">open the clip</a>.` : m.status === "dismissed" ? "You marked this as no barking; the audio was deleted, and its measurements still help the suggestions." : "Select the barks the Pi missed, then add them under the right dog."}</p>
       ${m.has_audio ? `
       <div class="spec-wrap" id="spec"><canvas id="specCanvas" width="900" height="80"></canvas><div class="spec-marks" id="cands"></div><div class="playhead" id="ph" style="left:0"></div></div>
       <canvas class="tl-level miss-level" id="missLevel"></canvas>
@@ -382,13 +557,7 @@ async function renderMissed() {
   const aud = $("#aud");
   let stopAt = null;
   if (m.has_audio) {
-    api(`/api/missed/${id}/spectrogram?width=900&height=80`).then((sp) => {
-      const c = $("#specCanvas"); if (!c) return;
-      c.width = sp.width; c.height = sp.height;
-      const ctx = c.getContext("2d"), img = ctx.createImageData(sp.width, sp.height), raw = atob(sp.data);
-      for (let i = 0; i < raw.length; i++) { const v = raw.charCodeAt(i) * 3; img.data[i * 4] = LUT[v]; img.data[i * 4 + 1] = LUT[v + 1]; img.data[i * 4 + 2] = LUT[v + 2]; img.data[i * 4 + 3] = 255; }
-      ctx.putImageData(img, 0, 0);
-    }).catch(() => {});
+    api(`/api/missed/${id}/spectrogram?width=900&height=80`).then((sp) => { const c = $("#specCanvas"); if (c) paintSpec(c, sp); }).catch(() => {});
     const tick = () => {
       if (!document.body.contains(aud)) return;
       $("#ph").style.left = `${(aud.currentTime / len) * 100}%`;
@@ -479,18 +648,22 @@ async function renderMissed() {
       const dog = b.dataset.add === "" ? null : Number(b.dataset.add);
       try {
         const r = await api(`/api/missed/${id}/add`, { method: "POST", body: { candidates: [...sel], dog_id: dog } });
-        toastLink(`Added ${sel.size} bark${sel.size === 1 ? "" : "s"} to the log`, `#/clip/${r.episode_id}`, "Open clip");
-        location.hash = m.next_new ? `#/missed/${m.next_new}` : "#/tune";
+        toastLink(`Added ${sel.size} bark${sel.size === 1 ? "" : "s"} to the log`, `#/clips/${r.episode_id}`, "Open clip");
+        location.hash = m.next_new ? `#/tune/capture/${m.next_new}` : "#/tune";
       } catch (e) { toast(e.message); }
     });
     $("#dismiss").onclick = async () => {
       if (!confirm("Discard this capture? Its audio is deleted; the measurements are kept to improve suggestions.")) return;
       await api(`/api/missed/${id}/dismiss`, { method: "POST" });
-      toast("Discarded"); location.hash = m.next_new ? `#/missed/${m.next_new}` : "#/tune";
+      toast("Discarded"); location.hash = m.next_new ? `#/tune/capture/${m.next_new}` : "#/tune";
     };
   }
 
   wireWhatIf($("#whatIf"), cur, draw);
   draw();
-  window.onresize = () => { if (route.name === "missed") draw(); };
+  const onR = () => { if (route.name === "capture") draw(); };
+  window.addEventListener("resize", onR); LOOPS.add(() => window.removeEventListener("resize", onR));
 }
+
+PAGES.tune = renderTune;
+PAGES.capture = renderCapture;

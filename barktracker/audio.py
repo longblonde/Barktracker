@@ -91,6 +91,7 @@ class MicSource:
         self.device_name = None
         self._restart = threading.Event()
         self._rescan = False
+        self._closed = False
         self.tap = None              # optional fn(frames x channels, ts, rate) before mono mixing
         self.prefer_native = False   # open at the device's own rate (finer timing for the direction test)
 
@@ -98,6 +99,12 @@ class MicSource:
         """Move to another input: the open stream closes and reopens on `device` within ~0.5 s."""
         self.device = device or "auto"
         self._rescan = True          # re-read the device list so a newly plugged-in mic is found
+        self._restart.set()
+
+    def close(self) -> None:
+        """Shutdown: end the stream loop so the stream is closed before Python exits. Left open,
+        sounddevice's exit hook (Pa_Terminate) can deadlock with the audio callback thread."""
+        self._closed = True
         self._restart.set()
 
     # Names USB webcams/mics show up as in ALSA, best first (Logitech C920/C922/C930e/Brio, etc.)
@@ -126,6 +133,8 @@ class MicSource:
 
     def __iter__(self) -> Iterator[tuple[np.ndarray, float]]:
         import sounddevice as sd
+        if self._closed:
+            return
 
         def cb(indata, frames, t, status):
             if status:
@@ -160,24 +169,27 @@ class MicSource:
             self.sr = native
             self.block = int(native * self.block_seconds)
         log.info("Opening input %s (%d ch) @ %d Hz", self.device_name, self.channels, self.sr)
-        with sd.InputStream(device=dev, samplerate=self.sr, channels=self.channels, dtype="float32",
-                            blocksize=self.block, callback=cb):
-            while not self._restart.is_set():
-                try:
-                    data, ts = self.q.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-                if self.tap is not None:
+        try:   # finally: also runs when the reader stops early (shutdown closes us mid-yield)
+            with sd.InputStream(device=dev, samplerate=self.sr, channels=self.channels, dtype="float32",
+                                blocksize=self.block, callback=cb):
+                while not self._restart.is_set():
                     try:
-                        self.tap(data * self.gain, ts, self.sr)
-                    except Exception:  # noqa: BLE001 - an experiment must never stop listening
-                        log.debug("input tap failed", exc_info=True)
-                x = data.mean(axis=1) if data.ndim > 1 else data
-                x = F.resample(x * self.gain, self.sr) if self.sr != F.SR else x * self.gain
-                yield x.astype(np.float32), ts
-        while not self.q.empty():        # switching inputs: drop audio from the old one
-            self.q.get_nowait()
-        log.info("Input stream closed (switching microphone)")
+                        data, ts = self.q.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    if self.tap is not None:
+                        try:
+                            self.tap(data * self.gain, ts, self.sr)
+                        except Exception:  # noqa: BLE001 - an experiment must never stop listening
+                            log.debug("input tap failed", exc_info=True)
+                    x = data.mean(axis=1) if data.ndim > 1 else data
+                    x = F.resample(x * self.gain, self.sr) if self.sr != F.SR else x * self.gain
+                    yield x.astype(np.float32), ts
+        finally:
+            while not self.q.empty():        # switching inputs: drop audio from the old one
+                self.q.get_nowait()
+            log.info("Input stream closed (%s)", "shutting down" if self._closed
+                     else "switching microphone" if self._restart.is_set() else "stopped")
 
 
 class FileSource:

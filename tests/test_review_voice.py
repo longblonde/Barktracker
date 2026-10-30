@@ -171,11 +171,18 @@ def test_heatmap_cells_and_quiet_hours(tmp_path):
     assert sum(map(sum, h["episodes"])) == 2 and sum(h["weekdays"]) == 28
     assert sum(v for row in h["dogs"] for cell in row for k, v in cell.items() if k == str(rex["id"])) == 5
     # default 10 PM - 7 AM: 22..6 fully quiet, 7..21 not
-    assert all(h["quiet"][hr] == [[0, 1]] for hr in (22, 23, 0, 3, 6))
-    assert all(h["quiet"][hr] == [] for hr in (7, 12, 21))
+    assert all(h["quiet"][r][hr] == [[0, 1]] for r in range(7) for hr in (22, 23, 0, 3, 6))
+    assert all(h["quiet"][r][hr] == [] for r in range(7) for hr in (7, 12, 21))
     c.put("/api/ordinance", json={"thresholds": {"quiet_start": "22:30", "quiet_end": "06:15"}})
     h = c.get("/api/heatmap").json()
-    assert h["quiet"][22] == [[0.5, 1]] and h["quiet"][6] == [[0, 0.25]] and h["quiet"][23] == [[0, 1]]
+    assert h["quiet"][0][22] == [[0.5, 1]] and h["quiet"][0][6] == [[0, 0.25]] and h["quiet"][0][23] == [[0, 1]]
+    # weekend nights (Friday and Saturday) can have their own hours: 11:30 PM to 9 AM
+    c.put("/api/ordinance", json={"thresholds": {"weekend_quiet": True, "quiet_start_weekend": "23:30",
+                                                  "quiet_end_weekend": "09:00"}})
+    h = c.get("/api/heatmap").json()
+    assert h["quiet"][4][22] == [] and h["quiet"][4][23] == [[0.5, 1]]          # Friday night starts later
+    assert h["quiet"][5][8] == [[0, 1]] and h["quiet"][6][8] == [[0, 1]]         # Sat and Sun mornings run late
+    assert h["quiet"][0][8] == [] and h["quiet"][6][22] == [[0.5, 1]]            # Sunday night is a school night
     h2 = c.get(f"/api/heatmap?dogs={rex['id']}").json()
     assert sum(map(sum, h2["barks"])) == 5
     app.shutdown()

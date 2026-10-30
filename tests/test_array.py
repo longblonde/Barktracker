@@ -52,7 +52,7 @@ def test_stereo_directions_from_a_file(tmp_path):
     angles = [30, 90, 150, 60]
     stereo_scene(wav, angles, 0.5)
     cfg = Config(data_dir=str(tmp_path / "data"))
-    cfg.dev.array, cfg.dev.array_mode, cfg.dev.array_spacing_cm = True, "stereo", 50
+    cfg.direction.enabled, cfg.direction.mode, cfg.direction.spacing_cm = True, "stereo", 50
     t0 = time.time() - 60
     src = FileSource(str(wav), start_ts=t0)
     app = BarkApp(cfg, src, start_detector=False)
@@ -65,7 +65,7 @@ def test_stereo_directions_from_a_file(tmp_path):
     got = [min(barks, key=lambda e: abs(e["ts"] - (t0 + 1.5 + 2.5 * i)))["angle"] for i in range(len(angles))]
     assert all(abs(g - a) < 5 for g, a in zip(got, angles)), got
     # swapped mics mirror the angle
-    cfg.dev.array_swap = True
+    cfg.direction.swap = True
     app.array.done.clear()
     app.array.process(now=time.time())
     sw = [e for e in app.array.events if e["kind"] == "bark" and e["valid"]][-len(barks):]
@@ -77,7 +77,7 @@ def test_pair_mode_calibration(tmp_path):
     """Two separate mics: the second stream runs 37 ms late; calibrating on a sound from
     straight ahead removes that offset."""
     cfg = Config(data_dir=str(tmp_path))
-    cfg.dev.array, cfg.dev.array_mode, cfg.dev.array_spacing_cm = True, "pair", 100
+    cfg.direction.enabled, cfg.direction.mode, cfg.direction.spacing_cm = True, "pair", 100
     app = BarkApp(cfg, None, start_detector=False)
     app.detector = BarkDetector(cfg, HeuristicClassifier(), app.store)
     rng = np.random.default_rng(3)
@@ -103,7 +103,7 @@ def test_pair_mode_calibration(tmp_path):
 
     app.array.calibrating = True
     e = run(90, t0)                                      # a sound from straight ahead
-    assert not app.array.calibrating and abs(cfg.dev.array_offset_ms - lag * 1000) < 0.3
+    assert not app.array.calibrating and abs(cfg.direction.offset_ms - lag * 1000) < 0.3
     e = run(45, t0 + 6)
     assert e["valid"] and abs(e["angle"] - 45) < 5
     c = TestClient(create_app(app))
@@ -121,14 +121,14 @@ def test_off_by_default(tmp_path):
     assert not app.array.st_a.blocks                     # ignores audio until switched on
     c = TestClient(create_app(app))
     assert c.post("/api/array/calibrate", json={}).status_code == 400
-    assert c.put("/api/settings", json={"values": {"dev.array_mode": "triple"}}).status_code == 400
+    assert c.put("/api/settings", json={"values": {"direction.mode": "triple"}}).status_code == 400
     app.shutdown()
 
 
 def test_old_estimates_are_flushed(tmp_path):
     from barktracker.array import KEEP_SECONDS
     cfg = Config(data_dir=str(tmp_path))
-    cfg.dev.array = True
+    cfg.direction.enabled = True
     app = BarkApp(cfg, None, start_detector=False)
     app.detector = BarkDetector(cfg, HeuristicClassifier(), app.store)
     now = time.time()
@@ -145,7 +145,7 @@ def test_directions_are_kept_per_bark_and_per_dog(tmp_path):
     wav = tmp_path / "stereo.wav"
     stereo_scene(wav, [40, 40, 40, 140, 140], 0.5, seed=4)
     cfg = Config(data_dir=str(tmp_path / "data"))
-    cfg.dev.array, cfg.dev.array_mode, cfg.dev.array_spacing_cm = True, "stereo", 50
+    cfg.direction.enabled, cfg.direction.mode, cfg.direction.spacing_cm = True, "stereo", 50
     t0 = time.time() - 60
     src = FileSource(str(wav), start_ts=t0)
     app = BarkApp(cfg, src, start_detector=False)

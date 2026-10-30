@@ -19,6 +19,7 @@ from typing import Callable
 
 import numpy as np
 
+from . import clockfix
 from . import features as F
 from .classifier import WINDOW, Classifier
 from .clips import ClipWriter, clip_path_for
@@ -96,6 +97,8 @@ class BarkDetector:
         self.last_classify_ms = 0.0
         self.last_bark_wall = 0.0
         self.started = time.time()
+        self.clock_off: float | None = None      # wall clock minus monotonic clock: moves when the clock jumps
+        self.clock_jump: tuple[float, float] | None = None   # (seconds, monotonic when seen), until applied
         # tuning page: per-frame spectrogram columns and level/background, and what was decided
         self.spec: collections.deque = collections.deque(maxlen=self.ring.maxlen)    # (idx, uint8 col)
         self.trace: collections.deque = collections.deque(maxlen=self.ring.maxlen)   # (idx, level, floor)
@@ -114,18 +117,45 @@ class BarkDetector:
 
     def feed(self, x: np.ndarray, ts: float) -> None:
         """x: 16 kHz mono float32; ts: wall-clock time of x[0]."""
+        off = time.time() - time.monotonic()
+        if self.clock_off is not None and abs(off - self.clock_off) > 2.0:
+            self.clock_jump = ((self.clock_jump or (0.0, 0.0))[0] + off - self.clock_off, time.monotonic())
+        self.clock_off = off
         if self.base_ts is None:
             self.base_ts = ts
         expected = self.base_ts + self.received / F.SR
         if abs(ts - expected) > 2.0:   # clock jump / long overflow: re-anchor
-            log.warning("Audio clock drifted %.1fs; re-anchoring", ts - expected)
+            jump = self.clock_jump[0] if self.clock_jump else 0.0
+            # blocks queued before the jump still carry the old time; this is the first after it
+            if abs(jump) > clockfix.JUMP_FIX and abs(ts - expected - jump) < 5.0:
+                self._clock_jumped(jump)
+            else:
+                log.warning("Audio clock drifted %.1fs; re-anchoring", ts - expected)
+            self.clock_jump = None
             self.base_ts = ts - self.received / F.SR
+        elif self.clock_jump and time.monotonic() - self.clock_jump[1] > 10:
+            self.clock_jump = None
         self.received += len(x)
         buf = np.concatenate([self.carry, x]) if len(self.carry) else x
         nfull = len(buf) // FRAME
         for i in range(nfull):
             self._frame(buf[i * FRAME:(i + 1) * FRAME])
         self.carry = buf[nfull * FRAME:].copy()
+
+    def _clock_jumped(self, jump: float) -> None:
+        """The clock was set (time server after a boot): fix what was logged with the old time."""
+        log.warning("Clock jumped %+.1fs; correcting what was logged since boot", jump)
+        try:
+            n = clockfix.correct(self.store, jump, self.cfg.clips_path)
+            log.info("Clock fix: %s", ", ".join(f"{v} {k}" for k, v in n.items()) or "nothing to change")
+        except Exception:  # noqa: BLE001 - never stop listening over this
+            log.exception("Clock fix failed")
+        if self.ep:
+            self.ep.start_ts += jump
+            if self.ep.writer:
+                r = self.store.q1("SELECT clip_path FROM episodes WHERE id=?", (self.ep.id,))
+                if r and r["clip_path"]:
+                    self.ep.writer.path = Path(r["clip_path"])
 
     def flush(self) -> None:
         """Process whatever is pending and close any open episode (end of file / shutdown)."""

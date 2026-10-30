@@ -1,7 +1,9 @@
-"""EXPERIMENTAL: direction of sounds from two microphones (developer test page).
+"""Direction of sounds from two microphones (Settings > Microphone: Stereo or Two microphones).
 
 Nothing here changes detection. It listens alongside the detector and, for every sound the
-detector decided about, estimates where it came from:
+detector decided about, estimates where it came from (kept per bark, so the Dogs page can learn
+where each dog usually barks). While the Tuning page is open it also scans the input about ten
+times a second, so the bearing chart can show sound by direction as it happens.
 
   stereo  - the two capsules of one stereo device (e.g. a C920 webcam). Same clock, so the time
             difference of arrival (TDOA) between channels is real. Small spacing = coarse angle.
@@ -34,6 +36,14 @@ PAIR_SLACK = 0.25                # extra lag searched in pair mode (two clocks a
 BAND = (300.0, 4000.0)           # bark band used for the correlation
 KEEP_SECONDS = 15 * 60           # estimates older than this are dropped from memory
 MAX_PER_PASS = 8                 # estimates per 0.25 s pass, so a noisy yard can't hog the Pi's CPU
+SCAN_EVERY = 0.15                # live scan while someone watches the Tuning page
+SCAN_WINDOW = 0.12               # seconds of audio per live scan
+SCAN_LAG = 0.3                   # scan this far behind real time, so both streams have arrived
+SCAN_MIN_RISE = 8.0              # dB over the background before a scan is worth showing (quiet-room
+                                 # electrical noise on the AIY HAT correlates at 3-5 dB and lights every wedge)
+SCAN_MIN_CLARITY = 4.0           # live scans need a correlation peak this clear
+VALID_CLARITY = 4.0              # a sound's direction counts as clear (charts, dogs, matching) from here
+WATCH_SECONDS = 6.0              # keep scanning this long after the last feed request
 
 
 def gcc_phat(a: np.ndarray, b: np.ndarray, sr: int, max_tau: float, interp: int = 16,
@@ -191,24 +201,29 @@ class ArrayMonitor:
         self.error: str | None = None
         self.b_name: str | None = None
         self.b_rate: int | None = None
+        self.scans: collections.deque = collections.deque(maxlen=120)   # [ts, angle, rise, bark]
+        self.watch_until = 0.0
+        self.scan_note = ""
+        self.scan_ms = 0.0
+        self._last_scan = 0.0
         self._stop = threading.Event()
         self._b_restart = threading.Event()
         self._threads: list[threading.Thread] = []
 
     @property
     def d(self):
-        return self.cfg.dev
+        return self.cfg.direction
 
     # ---- input --------------------------------------------------------------------------
     def on_tap(self, data: np.ndarray, ts: float, sr: int) -> None:
         """Raw blocks from the main input (frames x channels), before it's mixed to mono."""
-        if not self.d.array:
+        if not self.d.enabled:
             return
         x = np.asarray(data, dtype=np.float32)
         if x.ndim == 1:
             x = x[:, None]
         self.main_channels = x.shape[1]
-        if self.d.array_mode == "stereo":
+        if self.d.mode == "stereo":
             if x.shape[1] >= 2:
                 self.st_a.add(x[:, 0], ts, sr)
                 self.st_b.add(x[:, 1], ts, sr)
@@ -226,9 +241,11 @@ class ArrayMonitor:
             t.start()
             self._threads.append(t)
 
-    def stop(self) -> None:
+    def stop(self, wait: float = 0.0) -> None:
         self._stop.set()
         self._b_restart.set()
+        for t in self._threads:          # wait: let the second mic's stream close before exit
+            t.join(wait)
 
     def reconfigure(self) -> None:
         """Settings changed: reopen the second mic and start the estimates afresh."""
@@ -240,14 +257,14 @@ class ArrayMonitor:
     def _second_mic(self) -> None:
         while not self._stop.is_set():
             self._b_restart.clear()
-            if not (self.d.array and self.d.array_mode == "pair" and self.d.array_device):
+            if not (self.d.enabled and self.d.mode == "pair" and self.d.device):
                 self.b_name = None
                 self._b_restart.wait(2.0)
                 continue
             try:
                 import sounddevice as sd
                 from .audio import MicSource
-                src = MicSource(self.d.array_device, F.SR, 1, 0.05, 0.0)
+                src = MicSource(self.d.device, F.SR, 1, 0.05, 0.0)
                 dev = src._resolve_device()
                 info = sd.query_devices(dev, "input")
                 sr = int(info["default_samplerate"])
@@ -271,10 +288,56 @@ class ArrayMonitor:
                 self._b_restart.wait(5.0)
 
     def _loop(self) -> None:
+        last = 0.0
         while not self._stop.is_set():
-            self._stop.wait(0.25)
-            if self.d.array:
+            self._stop.wait(SCAN_EVERY)
+            if not self.d.enabled:
+                continue
+            now = time.time()
+            if now < self.watch_until:
+                t = time.monotonic()
+                try:
+                    self.scan(now)
+                except Exception:  # noqa: BLE001
+                    log.debug("live direction scan failed", exc_info=True)
+                took = time.monotonic() - t
+                self.scan_ms = round(took * 1000, 1)
+                if took > SCAN_EVERY:            # a slow Pi: back off rather than eat a whole core
+                    self._stop.wait(took)
+            if now - last >= 0.25:
+                last = now
                 self.process()
+
+    def watch(self) -> None:
+        """Someone is looking at the live bearing chart: keep scanning for a few seconds."""
+        self.watch_until = time.time() + WATCH_SECONDS
+
+    def scan(self, now: float | None = None) -> list | None:
+        """One live look: where is the sound coming from right now, and how loud over the background."""
+        now = now or time.time()
+        det = getattr(self.app, "detector", None)
+        floor = getattr(det, "floor", None)
+        # the newest moment both streams have arrived for (audio comes in blocks, not continuously)
+        if self.d.mode == "stereo":
+            ready = min(self.st_a.latest(), self.st_b.latest())
+        else:
+            ready = min(self.a.latest(), self.b.latest() - PAIR_SLACK)
+        t1 = min(now - 0.05, ready - 0.01)
+        if t1 < now - SCAN_LAG - 2.0 or t1 - SCAN_WINDOW / 2 <= self._last_scan:
+            self.scan_note = "no new audio"
+            return None
+        self._last_scan = t1
+        m = self._measure(t1 - SCAN_WINDOW, t1)
+        if m is None:
+            self.scan_note = "no audio for that moment yet"
+            return None
+        rise = max(m["level_a"], m["level_b"]) - (floor if floor is not None else -70.0)
+        self.scan_note = f"rise {rise:.1f} dB, clarity {m['sharp']:.1f}"
+        if rise < SCAN_MIN_RISE or m["sharp"] < SCAN_MIN_CLARITY or not m["ok"]:
+            return None
+        row = [round(t1, 2), round(m["angle"], 1), round(rise, 1), bool(det is not None and det.ep is not None)]
+        self.scans.append(row)
+        return row
 
     def process(self, now: float | None = None) -> int:
         """Estimate a direction for each detector decision whose audio has fully arrived."""
@@ -312,10 +375,10 @@ class ArrayMonitor:
         return n
 
     # ---- estimates --------------------------------------------------------------------------
-    def _estimate(self, ev: dict) -> dict | None:
-        mode = self.d.array_mode
-        t0, t1 = ev["ts"] + WINDOW[0], ev["ts"] + WINDOW[1]
-        spacing = max(0.005, self.d.array_spacing_cm / 100.0)
+    def _measure(self, t0: float, t1: float) -> dict | None:
+        """Delay, angle, clarity and levels for the stretch of sound between t0 and t1."""
+        mode = self.d.mode
+        spacing = max(0.005, self.d.spacing_cm / 100.0)
         if mode == "stereo":
             ca, cb, slack = self.st_a, self.st_b, 0.0
         else:
@@ -324,10 +387,7 @@ class ArrayMonitor:
             return None
         a = ca.segment(t0, t1)
         # the second stream: a wider window so its clock offset can't push the sound out of it
-        if mode == "stereo":
-            b = cb.segment(t0, t1)
-        else:
-            b = cb.segment(t0 - slack, t1 + slack)
+        b = cb.segment(t0 - slack, t1 + slack)
         if a is None or b is None or len(a) < 64 or len(b) < 64:
             return None
         if cb.sr != ca.sr:
@@ -344,8 +404,8 @@ class ArrayMonitor:
             s0 = int(round(slack * sr))
             a2[s0:s0 + len(a)] = a[:max(0, len(b) - s0)]
             raw, sharp = gcc_phat(a2, b, sr, slack + spacing / SPEED_OF_SOUND * 1.2)
-            tau = raw - self.d.array_offset_ms / 1000.0
-        if self.d.array_swap:              # the mics are the other way round: mirror the angle
+            tau = raw - self.d.offset_ms / 1000.0
+        if self.d.swap:                    # the mics are the other way round: mirror the angle
             tau = -tau
         ang, ok = angle_from_tau(tau, spacing)
         if mode == "stereo":
@@ -353,13 +413,20 @@ class ArrayMonitor:
         else:                                   # the same stretch of sound in the second stream
             k = max(0, int(round((slack + raw) * sr)))
             bb = b[k:k + len(a)] if len(b) >= k + len(a) // 2 else b
-        la, lb = float(F.dbfs(a)), float(F.dbfs(bb))
+        return {"mode": mode, "raw": raw, "tau": tau, "sharp": sharp, "angle": ang, "ok": ok,
+                "level_a": float(F.dbfs(a)), "level_b": float(F.dbfs(bb))}
+
+    def _estimate(self, ev: dict) -> dict | None:
+        m = self._measure(ev["ts"] + WINDOW[0], ev["ts"] + WINDOW[1])
+        if m is None:
+            return None
+        mode, sharp, la, lb = m["mode"], m["sharp"], m["level_a"], m["level_b"]
         self.seq += 1
         out = {"n": self.seq, "id": ev["id"], "ts": ev["ts"], "kind": ev["kind"], "prob": ev.get("prob"),
-               "angle": round(ang, 1), "valid": bool(ok and sharp >= 4.0), "sharp": round(sharp, 1),
-               "tau_us": round(tau * 1e6, 1), "raw_us": round(raw * 1e6, 1),
-               "level_a": round(la, 1), "level_b": round(lb, 1), "ild_db": round(la - lb, 1), "mode": mode}
-        out["dog"] = ev.get("dog")
+               "angle": round(m["angle"], 1), "valid": bool(m["ok"] and sharp >= VALID_CLARITY), "sharp": round(sharp, 1),
+               "tau_us": round(m["tau"] * 1e6, 1), "raw_us": round(m["raw"] * 1e6, 1),
+               "level_a": round(la, 1), "level_b": round(lb, 1), "ild_db": round(la - lb, 1), "mode": mode,
+               "rise": ev.get("rise"), "peak": ev.get("peak"), "dog": ev.get("dog")}
         self.events.append(out)
         store = getattr(self.app, "store", None)
         if store is not None:                    # kept, so dogs' usual directions can be learned
@@ -368,11 +435,11 @@ class ArrayMonitor:
                     c.execute("INSERT INTO bark_dirs(ts, kind, bearing, clarity, valid, level_a, level_b, mode, spacing_cm)"
                               " VALUES (?,?,?,?,?,?,?,?,?)",
                               (ev["ts"], ev["kind"], out["angle"], out["sharp"], int(out["valid"]),
-                               out["level_a"], out["level_b"], mode, self.d.array_spacing_cm))
+                               out["level_a"], out["level_b"], mode, self.d.spacing_cm))
             except Exception:  # noqa: BLE001
                 log.debug("storing direction failed", exc_info=True)
         if self.calibrating and mode == "pair" and sharp >= 4.0 and (ev.get("rise") or 0) >= 8:
-            self._apply_calibration(raw)            # first clear, loud sound after pressing Calibrate
+            self._apply_calibration(m["raw"])        # first clear, loud sound after pressing Calibrate
         return out
 
     def _apply_calibration(self, raw: float) -> None:
@@ -381,21 +448,22 @@ class ArrayMonitor:
         self.calibrating = False
         off = round(raw * 1000.0, 3)
         if self.app is not None:
-            self.app.update_settings({"dev.array_offset_ms": off})
+            self.app.update_settings({"direction.offset_ms": off})
         else:
-            self.d.array_offset_ms = off
+            self.d.offset_ms = off
         log.info("Array test: calibrated offset %.3f ms", off)
 
     def status(self) -> dict:
         d = self.d
-        chan = self.st_a if d.array_mode == "stereo" else self.a
+        chan = self.st_a if d.mode == "stereo" else self.a
         return {
-            "enabled": d.array, "mode": d.array_mode, "spacing_cm": d.array_spacing_cm,
-            "offset_ms": d.array_offset_ms, "swap": d.array_swap, "device_b": d.array_device,
+            "enabled": d.enabled, "mode": d.mode, "spacing_cm": d.spacing_cm,
+            "offset_ms": d.offset_ms, "swap": d.swap, "device_b": d.device,
             "main_channels": self.main_channels, "main_rate": chan.sr,
             "second_name": self.b_name, "second_rate": self.b_rate,
             "second_live": bool(self.b.blocks) and time.time() - self.b.latest() < 3.0,
             "stereo_live": bool(self.st_a.blocks) and time.time() - self.st_a.latest() < 3.0,
-            "calibrating": self.calibrating, "error": self.error,
-            "max_delay_us": round(d.array_spacing_cm / 100.0 / SPEED_OF_SOUND * 1e6, 1),
+            "calibrating": self.calibrating, "error": self.error, "scan_note": self.scan_note, "scan_ms": self.scan_ms,
+            "lag_s": round(time.time() - chan.latest(), 2) if chan.blocks else None,
+            "max_delay_us": round(d.spacing_cm / 100.0 / SPEED_OF_SOUND * 1e6, 1),
         }

@@ -51,6 +51,7 @@ class IdentifyConfig:
     k: int = 7
     min_labels_per_dog: int = 3
     min_confidence: float = 0.55
+    use_direction: bool = True           # also weigh where a bark came from (when direction is on)
 
 
 @dataclass
@@ -75,19 +76,24 @@ class UiConfig:
     day_nap_below_dbfs: float = -50.0    # ...meaning background noise below this level
     sound_notes: bool = True             # "Hearing a car" on the live band for other recognised sounds...
     sound_note_min: float = 0.8          # ...when the sound model is at least this sure
-    alert_color: str = "#e8a800"         # live graph and browser-tab dog while barking (mustard)
-    bark_icon_color: str | None = None   # (unused since v0.12.1; replaced by alert_color)
+    alert_color: str = "#e8a800"         # (moved into themes in v0.15; kept so old settings load)
+    bark_icon_color: str | None = None   # (unused since v0.12.1)
 
 
 @dataclass
-class DevConfig:
-    """Experimental features, off by default."""
-    array: bool = False                  # dual-microphone direction test page (Settings > System)
-    array_mode: str = "stereo"           # stereo = the main mic's two channels; pair = main + second mic
-    array_device: str | None = None      # second microphone for pair mode (part of its name)
-    array_spacing_cm: float = 7.0        # distance between the two microphones
-    array_offset_ms: float = 0.0         # pair mode: clock offset between the mics (set by calibrating)
-    array_swap: bool = False             # mic A is on the other side
+class DirectionConfig:
+    """Which way sounds come from, using two microphones. Off = mix the input to mono."""
+    enabled: bool = False                # Settings > Microphone: "Stereo" or "Two microphones"
+    mode: str = "stereo"                 # stereo = the main mic's two channels; pair = main + second mic
+    device: str | None = None            # second microphone for pair mode (part of its name)
+    spacing_cm: float = 7.0              # distance between the two microphones
+    offset_ms: float = 0.0               # pair mode: clock offset between the mics (set by calibrating)
+    swap: bool = False                   # mic A is on the other side
+
+
+# config.yaml files from before v0.15 used a "dev:" section with array_* names
+LEGACY_DIRECTION = {"array": "enabled", "array_mode": "mode", "array_device": "device",
+                    "array_spacing_cm": "spacing_cm", "array_offset_ms": "offset_ms", "array_swap": "swap"}
 
 
 @dataclass
@@ -112,7 +118,7 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     ui: UiConfig = field(default_factory=UiConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
-    dev: DevConfig = field(default_factory=DevConfig)
+    direction: DirectionConfig = field(default_factory=DirectionConfig)
 
     @property
     def data_path(self) -> Path:
@@ -151,7 +157,14 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     for cand in candidates:
         if cand and Path(cand).exists():
             with open(cand) as fh:
-                _merge(cfg, yaml.safe_load(fh) or {})
+                raw = yaml.safe_load(fh) or {}
+            legacy = raw.pop("dev", None) or {}
+            if legacy:
+                raw.setdefault("direction", {})
+                for old, new in LEGACY_DIRECTION.items():
+                    if old in legacy:
+                        raw["direction"].setdefault(new, legacy[old])
+            _merge(cfg, raw)
             cfg.source_file = str(Path(cand).resolve())
             base = Path(cand).resolve().parent
             # Relative paths in a config file are relative to that file.
