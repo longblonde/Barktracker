@@ -86,9 +86,8 @@ Each section is a card that opens when you need it (Open all / Close all at the 
 
 - **Microphone and detection:** which microphone, **Mix to mono**, **Stereo** (two capsules on one device, for direction) or **Two microphones**, the distance between them, microphone boost, quiet time that ends a clip, smallest clip, ignoring learned false alarms, and how dogs are told apart (labels needed, match confidence, using direction). The three detection levels themselves are set on the Tuning page, where you can see their effect.
 - **Storage and backup:** disk usage, how much audio recent barking adds per day and how many days the cap holds, clip retention, disk cap, clip length, pre and post roll; and the USB backup drive (see [Backup and restore](#backup-and-restore)).
-- **Live band and dashboard:** daytime napping and its background-noise threshold, "Hearing a car" notes, and the nap, sit and bark pictures.
 - **Alerts:** a list you add to and remove from, like alarms on a phone. Each alert goes to one place (ntfy, Discord, Slack, or a JSON webhook for Home Assistant and the like) when its condition is met: a clip ends (optionally only if it meets a report rule, or lasts long enough), barking has gone on for N minutes (once per clip, while it's still happening), or a daily or weekly summary at a set time. Each can be limited to quiet hours and to certain dogs. **Test** sends a sample.
-- **Theme:** pick a theme, duplicate one to make your own, change its colors (light and dark), alert color, corner roundness and behavior (BARK words, tab alert, calm motion). A theme can carry its own live band pictures (napping, sitting, barking): copy the current ones in, and the theme then downloads as a .zip with them. Upload a .json or .zip someone shared. Your themes are stored in `data/themes/` and backed up with everything else.
+- **Theme:** pick a theme, duplicate one to make your own, and change everything about the look: name, light or dark, corner roundness and alert color; the **Live band** (daytime napping and its background-noise threshold, "Hearing a car" notes and how sure the model must be, BARK words, and the nap, sit and bark pictures); the colors (light and dark); and behavior (tab alert, calm motion). Built-in themes can't be changed, but your own pictures (used by any theme without pictures of its own) can always be added and removed there. A theme can carry its own live band pictures: copy the current ones in, and the theme then downloads as a .zip with them. Upload a .json or .zip someone shared. Your themes are stored in `data/themes/` and backed up with everything else.
 - **Advanced (debug):** the numbers normally fixed in the code, such as when a clip counts as Unreviewed (bark score under 60%, a match under 75%), how loud a sound must be to show on the bearing chart, how direction weighs into matching, live band timing, how big a clock jump gets corrected, and how "Dogs you haven't named" groups barks. Changed values are marked; one button puts them all back.
 - **System:** the Pi's model, temperature, power warnings, load, memory, disk and uptime; whether it's listening and on what; detector and clock status; download the whole log as CSV.
 
@@ -100,11 +99,11 @@ The band shows one of three pictures:
 
 | Picture | When | Folder |
 |---|---|---|
-| Napping | Calm (no noise above the background) during quiet hours, or in the daytime when the background noise is below the daytime-nap threshold (-50 dBFS by default) | `data/media/quiet/` |
+| Napping | Calm (no noise above the background) during quiet hours, or in the daytime when the background noise is below the daytime-nap threshold (-50 dBFS by default; it's part of the theme) | `data/media/quiet/` |
 | Sitting | Daytime with background noise above that threshold, or any sound at least 8 dB above the background noise (or louder than -38 dBFS) without barking | `data/media/active/` |
 | Barking | A bark is detected, for as long as the episode lasts | `data/media/bark/` |
 
-Switching between napping and sitting waits 4 seconds so a passing car doesn't flip it; barking switches immediately. Put your own files in those folders or upload them on Settings; if a folder has several, one is picked at random. JPG, PNG, GIF, WebP, SVG, MP4 and WebM all work. Until you add your own, the built-in drawings are used.
+Switching between napping and sitting waits 4 seconds so a passing car doesn't flip it; barking switches immediately. Put your own files in those folders or upload them under Settings → Theme → Live band; if a folder has several, one is picked at random. JPG, PNG, GIF, WebP, SVG, MP4 and WebM all work. Until you add your own, the built-in drawings are used.
 
 ## Noise ordinance
 

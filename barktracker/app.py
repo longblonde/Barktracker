@@ -32,6 +32,9 @@ class BarkApp:
         self.defaults = settings_mod.apply_saved(cfg, self.store)   # dashboard overrides
         from . import advanced
         advanced.apply_saved(self.store)                             # Settings > Advanced
+        from . import themes
+        themes.migrate_live_band(cfg, self.store)
+        themes.apply_live_band(cfg, themes.active(cfg, self.store))  # the live band follows the theme
         self._keep_ordinance()
         self.backup = backup_mod.Backup(cfg, self.store, getattr(cfg, "source_file", None))
         from . import tuning
