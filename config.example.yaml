@@ -48,12 +48,15 @@ notify:
   min_duration: 30             # only for episodes at least this long (seconds)
 
 ui:
-  bark_words: true             # red BARK words over the live band while barking
-  day_nap: true                # show the napping dog in the daytime when it's calm...
-  day_nap_below_dbfs: -50      # ...meaning background noise below this level
-  sound_notes: true            # "Hearing a car" on the live band for other recognized sounds...
-  sound_note_min: 0.8          # ...when the sound model is at least this sure
-  alert_color: "#e8a800"       # live graph and browser-tab dog while barking
+  day_nap_below_dbfs: -50      # calm daytime (napping dog on the live band): background noise below this
+  # The rest of the live band's look and behavior (BARK words, daytime napping on or off, "Hearing a
+  # car" notes, alert color) is part of the theme now: Settings > Theme. The values below are only
+  # read once, by installs upgrading from before themes, to carry choices over into a theme.
+  bark_words: true
+  day_nap: true
+  sound_notes: true
+  sound_note_min: 0.8
+  alert_color: "#e8a800"
 
 backup:
   path: null                   # USB drive folder, e.g. /mnt/barktracker-backup (scripts/setup-usb-backup.sh)

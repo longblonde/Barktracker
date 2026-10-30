@@ -853,8 +853,10 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     def themes_view():
         act = TH.active(cfg, store)
+        TH.apply_live_band(cfg, act)             # after any change: the live band follows the active theme
         return {"active": act["id"], "theme": act, "themes": TH.all_themes(cfg),
-                "color_keys": TH.COLOR_KEYS, "behaviors": {k: v[0] for k, v in TH.BEHAVIORS.items()}}
+                "color_keys": TH.COLOR_KEYS, "behaviors": {k: v[0] for k, v in TH.BEHAVIORS.items()},
+                "live_band": {k: v[0] for k, v in TH.LIVE_BAND.items()}}
 
     @app.get("/api/themes")
     def get_themes():

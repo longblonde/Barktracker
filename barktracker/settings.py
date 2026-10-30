@@ -32,6 +32,7 @@ SPECS = {s.key: s for s in [
     Spec("detection.episode_gap", "float", 1, 120),
     Spec("detection.min_episode_barks", "int", 1, 50),
     Spec("detection.suppress_learned_false_positives", "bool"),
+    Spec("ui.day_nap_below_dbfs", "float", -90, -10),      # calm enough for the live band's daytime nap
     Spec("audio.gain_db", "float", -12, 30),
     Spec("clips.preroll", "float", 0, 10),
     Spec("clips.postroll", "float", 0, 30),
@@ -41,10 +42,6 @@ SPECS = {s.key: s for s in [
     Spec("identify.min_confidence", "float", 0.3, 0.95),
     Spec("identify.min_labels_per_dog", "int", 1, 100),
     Spec("identify.use_direction", "bool"),
-    Spec("ui.day_nap", "bool"),
-    Spec("ui.day_nap_below_dbfs", "float", -90, -10),
-    Spec("ui.sound_notes", "bool"),
-    Spec("ui.sound_note_min", "float", 0.3, 0.99),
     Spec("audio.device", "device"),
     Spec("backup.path", "path"),
     Spec("backup.enabled", "bool"),

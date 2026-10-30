@@ -1,4 +1,4 @@
-"""Themes: every color and display behavior of the dashboard, in one small JSON file.
+"""Themes: every color and display behavior of the dashboard, live band included, in one small JSON file.
 
 Built-in themes live here and can't be changed; "Duplicate" one to make your own. Your themes are
 files in <data_dir>/themes/*.json, so they're backed up with everything else and can be shared:
@@ -12,7 +12,8 @@ A theme file looks like:
   {"name": "Porch light", "mode": "auto",
    "colors": {"light": {"ink": "#1d2833", ...}, "dark": {"ink": "#e4e9ec", ...}},
    "alert_color": "#e8a800", "radius": 8,
-   "behaviors": {"bark_words": true, "motion": "full", "tab_alert": true}}
+   "behaviors": {"bark_words": true, "motion": "full", "tab_alert": true},
+   "live_band": {"day_nap": true, "sound_notes": true, "sound_note_min": 0.8}}
 Anything missing is taken from the default theme.
 """
 from __future__ import annotations
@@ -46,6 +47,13 @@ BEHAVIORS = {
     "tab_alert": ("Browser tab turns the alert color and says “Barking Detected”", True),
     "motion": ("Animations", "full"),           # full | reduced
 }
+# what the live band shows when (the server picks the picture, so these apply to every screen). What
+# counts as calm depends on the microphone, so that level is a microphone setting (ui.day_nap_below_dbfs).
+LIVE_BAND = {
+    "day_nap": ("Show the napping dog in the daytime when it's calm", True),
+    "sound_notes": ("Name other sounds the Pi recognizes, like “Hearing a car”", True),
+    "sound_note_min": ("Only when the sound model is at least", 0.8),         # 0.3 to 0.99
+}
 MODES = ("auto", "light", "dark")
 
 DEFAULT = {
@@ -63,6 +71,7 @@ DEFAULT = {
     "alert_color": "#e8a800",
     "radius": 8,
     "behaviors": {"bark_words": True, "tab_alert": True, "motion": "full"},
+    "live_band": {k: v[1] for k, v in LIVE_BAND.items()},
 }
 
 BUILTIN = [
@@ -94,7 +103,7 @@ def folder(cfg) -> Path:
 def complete(t: dict) -> dict:
     """Fill anything a theme leaves out from the default theme."""
     out = copy.deepcopy(DEFAULT)
-    out.update({k: v for k, v in t.items() if k not in ("colors", "behaviors")})
+    out.update({k: v for k, v in t.items() if k not in ("colors", "behaviors", "live_band")})
     for mode in ("light", "dark"):
         out["colors"][mode].update((t.get("colors") or {}).get(mode) or {})
     # a theme that only defines one scheme uses it for both
@@ -103,6 +112,7 @@ def complete(t: dict) -> dict:
         other = "dark" if only[0] == "light" else "light"
         out["colors"][other] = {**out["colors"][other], **t["colors"][only[0]]}
     out["behaviors"].update(t.get("behaviors") or {})
+    out["live_band"].update(t.get("live_band") or {})
     out["builtin"] = bool(t.get("builtin"))
     return out
 
@@ -142,6 +152,15 @@ def validate(t: dict) -> dict:
     b = t.get("behaviors") or {}
     out["behaviors"] = {"bark_words": bool(b.get("bark_words", True)), "tab_alert": bool(b.get("tab_alert", True)),
                         "motion": "reduced" if b.get("motion") == "reduced" else "full"}
+    lb, d = t.get("live_band") or {}, DEFAULT["live_band"]
+    try:
+        out["live_band"] = {
+            "day_nap": bool(lb.get("day_nap", d["day_nap"])),
+            "sound_notes": bool(lb.get("sound_notes", d["sound_notes"])),
+            "sound_note_min": max(0.3, min(0.99, float(lb.get("sound_note_min", d["sound_note_min"])))),
+        }
+    except (TypeError, ValueError):
+        raise ValueError("live_band sound_note_min must be a number") from None
     return out
 
 
@@ -223,7 +242,34 @@ def delete(cfg, store, tid: str) -> None:
 
 
 def export(t: dict) -> dict:
-    return {k: t[k] for k in ("name", "description", "mode", "colors", "alert_color", "radius", "behaviors")}
+    return {k: t[k] for k in ("name", "description", "mode", "colors", "alert_color", "radius", "behaviors", "live_band")}
+
+
+def apply_live_band(cfg, t: dict) -> None:
+    """The live band reads these from cfg.ui; the active theme decides them."""
+    for k, v in t["live_band"].items():
+        setattr(cfg.ui, k, v)
+
+
+def migrate_live_band(cfg, store) -> None:
+    """Before v0.16 the live band settings were plain settings (config.yaml or the dashboard). Once,
+    move any you changed into the theme: the active one if it's yours, else a copy named "My theme"."""
+    if store.get_meta("live_band_in_theme"):
+        return
+    t = active(cfg, store)           # first: an install from before themes turns its old settings into one
+    saved = store.get_meta("app_settings") or {}
+    was = {k: saved.get(f"ui.{k}", getattr(cfg.ui, k)) for k in LIVE_BAND}
+    if was != DEFAULT["live_band"]:
+        data = {**export(t), "live_band": was}
+        if t["builtin"]:
+            data["name"] = "My theme"
+            set_active(cfg, store, save(cfg, data)["id"])
+        else:
+            save(cfg, data, t["id"])
+    gone = {f"ui.{k}" for k in LIVE_BAND} | {"ui.alert_color", "ui.bark_words"}     # now in the theme
+    if gone & saved.keys():
+        store.set_meta("app_settings", {k: v for k, v in saved.items() if k not in gone})
+    store.set_meta("live_band_in_theme", True)
 
 
 def css(t: dict) -> str:

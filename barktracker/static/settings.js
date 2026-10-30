@@ -1,13 +1,13 @@
 "use strict";
-// Settings: the set-and-forget things. Microphone and detection, storage and backup, the live band,
-// alerts to other apps, the theme, and how the Pi itself is doing. Watching the microphone live and
+// Settings: the set-and-forget things. Microphone and detection, storage and backup, alerts to other
+// apps, the theme (which includes the live band), and how the Pi itself is doing. Watching the microphone live and
 // adjusting detection levels happens on the Detection and tuning page.
 
-const SETTINGS_SECTIONS = [["mic", "Microphone and detection"], ["storage", "Storage and backup"], ["band", "Live band and dashboard"],
+const SETTINGS_SECTIONS = [["mic", "Microphone and detection"], ["storage", "Storage and backup"],
   ["alerts", "Alerts"], ["theme", "Theme"], ["system", "System"], ["advanced", "Advanced (debug)"]];
 
 async function renderSettings() {
-  const [st, media] = await Promise.all([api("/api/settings"), api("/api/media")]);
+  const st = await api("/api/settings");
   if (route.name !== "settings") return;
   S.values = st.values;
   const card = (id, title, inner) => `<details class="panel card" id="card-${id}" data-card="${id}">
@@ -19,15 +19,14 @@ async function renderSettings() {
     <div class="cards">
       ${card("mic", "Microphone and detection", `<div id="sec-mic" class="solo"></div>`)}
       ${card("storage", "Storage and backup", `<div id="sec-storage"></div><div id="sec-backup"></div>`)}
-      ${card("band", "Live band and dashboard", `<div id="sec-band" class="solo"></div>`)}
       ${card("alerts", "Alerts", `<div id="sec-alerts" class="solo"></div>`)}
       ${card("theme", "Theme", `<div id="sec-theme" class="solo"></div>`)}
       ${card("system", "System", `<div id="sec-system" class="solo"></div>`)}
       ${card("advanced", "Advanced (debug)", `<div id="sec-advanced" class="solo"></div>`)}
     </div>
     <footer class="version">BarkTracker ${esc(st.build.version)}${st.build.commit ? `, build ${esc(st.build.commit)}${st.build.commit_date ? ` from ${esc(st.build.commit_date)}` : ""}` : ""}</footer>`;
-  drawMic(st); drawStorage(st); drawBackup(); drawPictures(media); drawAlerts(); drawTheme(); drawSystem(); drawAdvanced();
-  sumMic(st); sumStorage(st); sumBand(media);
+  drawMic(st); drawStorage(st); drawBackup(); drawAlerts(); drawTheme(); drawSystem(); drawAdvanced();
+  sumMic(st); sumStorage(st);
   view.querySelectorAll("details.card").forEach((d) => d.addEventListener("toggle", () => {
     if (d.open) history.replaceState(null, "", `#/settings/${d.dataset.card}`);
   }));
@@ -36,6 +35,7 @@ async function renderSettings() {
   if (route.arg) openCard(route.arg);
 }
 function openCard(id) {
+  if (id === "band") id = "theme";                // the live band moved into the theme
   const d = $(`#card-${id}`); if (!d) return;
   d.open = true;
   setTimeout(() => d.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
@@ -49,7 +49,6 @@ function sumStorage(st) {
   const d = st.disk, gb = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
   setSum("storage", `${gb(d.clips_mb)} of clips · ${gb(d.free_mb)} free${st.values["backup.path"] ? " · backing up to USB" : " · no backup drive"}`);
 }
-function sumBand(m) { setSum("band", m.source === "theme" ? `pictures from the theme “${m.theme}”` : m.quiet?.[0]?.own ? "your own pictures" : "built-in pictures"); }
 
 // ---- microphone and detection ------------------------------------------------------------
 function drawMic(st) {
@@ -76,6 +75,7 @@ function drawMic(st) {
       ${fieldNum("audio.gain_db", "Microphone boost", v["audio.gain_db"], { unit: "dB", min: -12, max: 30, help: "Webcams adjust their own gain; leave at 0 unless barks look quiet. The AIY Voice HAT has none: start at +18 dB (docs/MICROPHONES.md)." })}
       ${fieldNum("detection.episode_gap", "Quiet time that ends a clip", v["detection.episode_gap"], { unit: "seconds", min: 1, max: 120, step: 0.5 })}
       ${fieldNum("detection.min_episode_barks", "Smallest clip to keep", v["detection.min_episode_barks"], { unit: "barks", min: 1, max: 50, help: "2 skips single woofs." })}
+      ${fieldNum("ui.day_nap_below_dbfs", "Calm means background noise below", v["ui.day_nap_below_dbfs"], { unit: "dBFS", min: -90, max: -10, help: `The live band's napping dog shows in the daytime when it's this calm (if the theme allows it). Depends on the microphone and its boost. <span id="ambNow">Background noise right now: measuring…</span>` })}
     </div>
     ${fieldCheck("detection.suppress_learned_false_positives", "Drop sounds that match clips marked “Not a bark”", v["detection.suppress_learned_false_positives"])}
     <h3>Telling dogs apart</h3>
@@ -106,15 +106,21 @@ function drawMic(st) {
       if (inp.name === "chmode" || inp.name === "direction.device" && m !== "pair") continue;
       vals[inp.name] = inp.type === "checkbox" ? inp.checked : inp.value;
     }
-    try { const st2 = await saveApp(vals, m === "mono" ? "Saved: mixing to mono" : "Saved: direction is on; see Detection and tuning"); sumMic({ ...st, values: st2.values }); }
+    try { const st2 = await saveApp(vals, m === "mono" ? "Saved: mixing to mono" : "Saved: direction is on; see Detection and tuning"); sumMic({ ...st, values: st2.values }); if (S.media) drawPictures(S.media); }
     catch (e) { toast(e.message); }
   };
   $("#resetApp").onclick = async () => {
     if (!confirm("Undo every change made here to microphone, detection, storage and matching settings, and go back to config.yaml?")) return;
     const st2 = await api("/api/settings", { method: "PUT", body: { reset: true } });
-    toast("Restored config.yaml values"); S.values = st2.values; drawMic(st2); drawStorage(st2);
+    toast("Restored config.yaml values"); S.values = st2.values; drawMic(st2); drawStorage(st2); if (S.media) drawPictures(S.media);
   };
   drawMics(v["audio.device"]);
+  clearInterval(S.ambTimer);
+  S.ambTimer = setInterval(() => {
+    const a = $("#ambNow"); if (!a) { clearInterval(S.ambTimer); return; }
+    const l = Beat.latest();
+    a.textContent = l.ambient_db != null ? `Background noise right now: ${Math.round(l.ambient_db)} dBFS.` : "Background noise right now: not available (not listening).";
+  }, 1000);
 }
 
 // ---- alerts to other apps ---------------------------------------------------------------------
@@ -188,10 +194,12 @@ async function drawTheme() {
   setSum("theme", `${act.name}${act.pictures ? `, with ${act.pictures} pictures` : ""}`);
   let scheme = act.mode === "dark" ? "dark" : "light";
   const swatch = (t) => `<span class="sw" style="background:${t.colors.light.surface}"><i style="background:${t.colors.light.ink}"></i><i style="background:${t.colors.light.panel}"></i><i style="background:${t.alert_color}"></i><i style="background:${t.colors.dark.surface}"></i></span>`;
+  const dis = act.builtin ? "disabled" : "";
+  const lbv = edit.live_band, lbt = r.live_band;
   const draw = () => {
     el.innerHTML = `<div class="panel form">
       <h2>Theme</h2>
-      <p class="small muted intro">Every color and display behavior in one place. Built-in themes can't be changed: duplicate one to make it yours. Your themes are small files you can download, share and upload.</p>
+      <p class="small muted intro">Every color and display behavior in one place, the live band included. Built-in themes can't be changed: duplicate one to make it yours. Your themes are small files you can download, share and upload.</p>
       <div class="themes">${r.themes.map((t) => `<button type="button" class="theme-card" data-use="${t.id}" aria-pressed="${t.id === act.id}">${swatch(t)}<strong>${esc(t.name)}</strong><span class="small muted">${t.builtin ? "Built in" : "Yours"}${t.description ? ` · ${esc(t.description)}` : ""}</span></button>`).join("")}</div>
       <div class="row">
         <button type="button" class="btn" id="thDup">Duplicate “${esc(act.name)}”</button>
@@ -200,26 +208,36 @@ async function drawTheme() {
         ${act.builtin ? "" : `<button type="button" class="btn danger" id="thDel">Delete</button>`}
       </div>
       <h3>${act.builtin ? `${esc(act.name)} <span class="small muted">(built in: duplicate it to change these)</span>` : `Edit “${esc(act.name)}”`}</h3>
-      <fieldset class="theme-ed" ${act.builtin ? "disabled" : ""}>
+      <fieldset class="theme-ed" ${dis}>
         <div class="grid3">
           <label>Name<input type="text" id="thName" value="${esc(edit.name)}" maxlength="40"></label>
           <label>Light or dark<select id="thMode">${[["auto", "Follow the device"], ["light", "Always light"], ["dark", "Always dark"]].map(([k, t]) => `<option value="${k}" ${edit.mode === k ? "selected" : ""}>${t}</option>`).join("")}</select></label>
           <label>Corner roundness<span class="unit"><input type="range" id="thRadius" min="0" max="16" value="${edit.radius}"><output>${edit.radius}px</output></span></label>
         </div>
         <label class="colorpick">Barking alert<span class="unit"><input type="color" id="thAlert" value="${edit.alert_color}"> the live graph, bearing chart and browser-tab dog turn this color while a dog is barking</span></label>
+      </fieldset>
+      <h3>Live band</h3>
+      <p class="small muted intro">What the band at the top of every page shows, and when. These apply when you save.</p>
+      <fieldset class="theme-ed" ${dis}>
+        <label class="check"><input type="checkbox" id="lbNap" ${lbv.day_nap ? "checked" : ""}> ${esc(lbt.day_nap)}</label>
+        <label class="check"><input type="checkbox" id="lbNotes" ${lbv.sound_notes ? "checked" : ""}> ${esc(lbt.sound_notes)}</label>
+        <label>${esc(lbt.sound_note_min)}<span class="unit"><input type="number" id="lbNoteMin" value="${Math.round(lbv.sound_note_min * 100)}" min="30" max="99" step="1">% sure</span></label>
+        <label class="check"><input type="checkbox" id="thWords" ${edit.behaviors.bark_words ? "checked" : ""}> ${esc(r.behaviors.bark_words)}</label>
+      </fieldset>
+      <div id="thPics"></div>
+      ${act.builtin ? "" : `<div class="row">${act.pictures ? `<button type="button" class="btn" id="thPicsClear">Remove the theme's pictures</button><span class="small muted">The band then uses your own pictures (or the built-in drawings).</span>` : `<button type="button" class="btn" id="thPicsCopy">Copy the current pictures into this theme</button><span class="small muted">So they travel with it when you share it.</span>`}</div>`}
+      <h3>Colors</h3>
+      <fieldset class="theme-ed" ${dis}>
         <div class="row"><span class="small muted">Colors for</span><span class="seg" role="radiogroup">${["light", "dark"].map((s) => `<button type="button" role="radio" data-scheme="${s}" aria-checked="${scheme === s}">${s === "light" ? "Light" : "Dark"}</button>`).join("")}</span></div>
         <div class="colorgrid">${Object.entries(r.color_keys).map(([k, t]) => `<label class="colorpick"><input type="color" data-color="${k}" value="${edit.colors[scheme][k]}"> ${esc(t)}</label>`).join("")}</div>
-        <h3>Live band pictures</h3>
-        <p class="small muted" style="margin:0">${act.pictures ? `This theme has its own ${act.pictures} pictures; the live band uses them while it's active. Add or remove them under Live band and dashboard.` : "This theme uses your own live band pictures (or the built-in drawings). Copy the ones showing now into the theme to make them part of it, so they travel with it when you share it."}</p>
-        <div class="row">${act.pictures ? `<button type="button" class="btn" id="thPicsClear">Remove the theme's pictures</button>` : `<button type="button" class="btn" id="thPicsCopy">Copy the current pictures into this theme</button>`}</div>
         <h3>Behavior</h3>
-        <label class="check"><input type="checkbox" id="thWords" ${edit.behaviors.bark_words ? "checked" : ""}> ${esc(r.behaviors.bark_words)}</label>
         <label class="check"><input type="checkbox" id="thTab" ${edit.behaviors.tab_alert ? "checked" : ""}> ${esc(r.behaviors.tab_alert)}</label>
         <label class="check"><input type="checkbox" id="thCalm" ${edit.behaviors.motion === "reduced" ? "checked" : ""}> Calm motion: no bouncing bars or splashes, slower redraws (also kinder to an old screen)</label>
-        <div class="row"><button type="button" class="btn primary" id="thSave">Save theme</button><span class="small muted">Changes preview as you make them.</span></div>
+        <div class="row"><button type="button" class="btn primary" id="thSave">Save theme</button><span class="small muted">Colors preview as you make them.</span></div>
       </fieldset>
     </div>`;
     wire();
+    if (S.media) drawPictures(S.media); else refreshBand();
   };
   const preview = () => {          // try it on the page without saving
     const css = (vals) => Object.entries(vals).map(([k, v]) => `--${k}:${v}`).join(";") + `;--alert:${edit.alert_color};--radius:${edit.radius}px;--radius-sm:${Math.floor(edit.radius / 2)}px`;
@@ -273,6 +291,9 @@ async function drawTheme() {
     on("#thRadius", "input", (x) => { edit.radius = Number(x.value); x.nextElementSibling.textContent = `${x.value}px`; });
     on("#thAlert", "input", (x) => { edit.alert_color = x.value; });
     on("#thWords", "change", (x) => { edit.behaviors.bark_words = x.checked; });
+    on("#lbNap", "change", (x) => { lbv.day_nap = x.checked; });
+    on("#lbNotes", "change", (x) => { lbv.sound_notes = x.checked; });
+    on("#lbNoteMin", "input", (x) => { if (x.value !== "") lbv.sound_note_min = Number(x.value) / 100; });
     on("#thTab", "change", (x) => { edit.behaviors.tab_alert = x.checked; });
     on("#thCalm", "change", (x) => { edit.behaviors.motion = x.checked ? "reduced" : "full"; });
     el.querySelectorAll("[data-color]").forEach((x) => x.addEventListener("input", () => { edit.colors[scheme][x.dataset.color] = x.value; preview(); }));
@@ -283,7 +304,7 @@ async function drawTheme() {
   draw();
 }
 
-async function refreshBand() { try { const m = await api("/api/media"); drawPictures(m); sumBand(m); } catch (_) { /* */ } }
+async function refreshBand() { try { drawPictures(await api("/api/media")); } catch (_) { /* */ } }
 
 // ---- advanced (debug) ------------------------------------------------------------------------
 async function drawAdvanced() {
@@ -568,10 +589,12 @@ function waitForRestart(restarting) {
     setTimeout(tick, 1500);
   };
   setTimeout(tick, 1500);
-}function drawPictures(media) {
-  const v = S.values || {};
-  const m = { ...media, dayNap: v["ui.day_nap"] !== false, dayNapBelow: v["ui.day_nap_below_dbfs"],
-              soundNotes: v["ui.sound_notes"] !== false, soundMin: v["ui.sound_note_min"] ?? 0.8 };
+}
+
+// ---- live band pictures, in the theme's Live band subsection ---------------------------------
+function drawPictures(m) {
+  S.media = m;
+  const box = $("#thPics"); if (!box) return;
   const col = (kind, title, help) => {
     const items = m[kind], own = items.some((i) => i.own);
     return `<div class="piccol">
@@ -581,54 +604,36 @@ function waitForRestart(restarting) {
       <label class="btn upload">Add pictures<input type="file" accept="image/*,video/mp4,video/webm" multiple data-up="${kind}" hidden></label>
     </div>`;
   };
-  $("#sec-band").innerHTML = `<div class="panel form">
-    <h2>Live band and dashboard</h2>
-    <p class="small muted intro">The band at the top of every page shows one of three pictures. Photos, GIFs, SVGs and short MP4 or WebM loops all work; if a folder has several, one is picked at random. You can also copy files straight into <code>${esc(m.folder)}/quiet</code>, <code>/active</code> and <code>/bark</code> on the Pi. Colors, BARK words and the browser-tab alert are part of the <a href="#/settings/theme">theme</a>.</p>
-    <form class="daynap" id="dayNapForm">
-      <label class="check"><input type="checkbox" name="ui.day_nap" ${m.dayNap ? "checked" : ""}> Show the napping dog in the daytime when it's calm</label>
-      <label>Calm means background noise below<span class="unit"><input type="number" name="ui.day_nap_below_dbfs" value="${m.dayNapBelow}" min="-90" max="-10" step="1" required>dBFS</span>
-        <span class="help" id="ambNow">Background noise right now: measuring…</span></label>
-      <label class="check"><input type="checkbox" name="ui.sound_notes" ${m.soundNotes ? "checked" : ""}> Name other sounds the Pi recognizes, like “Hearing a car”</label>
-      <label>Only when the sound model is at least<span class="unit"><input type="number" name="ui.sound_note_min" value="${Math.round(m.soundMin * 100)}" min="30" max="99" step="1" required>% sure</span></label>
-      <button class="btn" type="submit">Save</button>
-    </form>
-    ${m.source === "theme" ? `<p class="small notice">These pictures belong to the theme “${esc(m.theme)}”: adding or removing them here changes the theme. Switch to a theme without pictures to use your own folder again.</p>` : ""}
+  box.innerHTML = `
+    <p class="small muted">${m.source === "theme" ? `These pictures belong to the theme “${esc(m.theme)}”: adding or removing them changes the theme.`
+      : `This theme has no pictures of its own, so it uses yours, shared by every theme without pictures. You can also copy files straight into <code>${esc(m.folder)}/quiet</code>, <code>/active</code> and <code>/bark</code> on the Pi.`}
+      Photos, GIFs, SVGs and short MP4 or WebM loops all work; if a column has several, one is picked at random.</p>
     <div class="three">
-      ${col("quiet", "Napping", "Quiet hours, or a calm daytime (see above).")}
+      ${col("quiet", "Napping", `Quiet hours, or a calm daytime: background noise below <a href="#/settings/mic" data-napset>${esc(String(S.values?.["ui.day_nap_below_dbfs"] ?? -50))} dBFS</a> (a microphone setting).`)}
       ${col("active", "Sitting", "Daytime background noise, or louder sounds without barking.")}
       ${col("bark", "Barking", "While a bark is being detected.")}
-    </div>
-  </div>`;
-  $("#dayNapForm").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = e.target;
-    try {
-      const st = await api("/api/settings", { method: "PUT", body: { values: {
-        "ui.day_nap": f.elements["ui.day_nap"].checked, "ui.day_nap_below_dbfs": f.elements["ui.day_nap_below_dbfs"].value,
-        "ui.sound_notes": f.elements["ui.sound_notes"].checked, "ui.sound_note_min": Number(f.elements["ui.sound_note_min"].value) / 100 } } });
-      S.values = st.values;
-      toast("Live band settings saved");
-    } catch (err) { toast(err.message); }
+    </div>`;
+  const ns = box.querySelector("[data-napset]");
+  if (ns) ns.onclick = (e) => {                   // jump to the setting and put the cursor in it
+    e.preventDefault(); openCard("mic");
+    const inp = $('#f-mic [name="ui.day_nap_below_dbfs"]');
+    if (inp) setTimeout(() => { inp.focus(); inp.select(); }, 350);
   };
-  clearInterval(S.ambTimer);
-  S.ambTimer = setInterval(() => {
-    const el = $("#ambNow"); if (!el) { clearInterval(S.ambTimer); return; }
-    const l = Beat.latest();
-    el.textContent = l.ambient_db != null ? `Background noise right now: ${Math.round(l.ambient_db)} dBFS` : "Background noise right now: not available (not listening)";
-  }, 1000);
-  $("#sec-band").querySelectorAll("[data-up]").forEach((inp) => inp.addEventListener("change", async () => {
+  box.querySelectorAll("[data-up]").forEach((inp) => inp.addEventListener("change", async () => {
     let r = m;
     for (const f of inp.files) {
       try { r = await fetch(`/api/media/${inp.dataset.up}/${encodeURIComponent(f.name)}`, { method: "PUT", body: f }).then(async (x) => { if (!x.ok) throw new Error((await x.json()).detail); return x.json(); }); }
       catch (e) { toast(`${f.name}: ${e.message}`); }
     }
-    toast("Pictures added"); drawPictures(r); sumBand(r); Beat.loadMedia();
+    toast("Pictures added"); drawPictures(r); Beat.loadMedia();
   }));
-  $("#sec-band").querySelectorAll("[data-delpic]").forEach((b) => b.addEventListener("click", async () => {
+  box.querySelectorAll("[data-delpic]").forEach((b) => b.addEventListener("click", async () => {
     const r = await api(`/api/media/${b.dataset.delpic.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
     toast("Picture removed"); drawPictures(r); Beat.loadMedia();
   }));
-}async function drawMics(configured) {
+}
+
+async function drawMics(configured) {
   const el = $("#micPick"); if (!el) return;
   let r;
   try { r = await api("/api/audio/devices"); } catch (e) { el.innerHTML = ""; return; }

@@ -72,8 +72,10 @@ class NotifyConfig:
 class UiConfig:
     media_dir: str | None = None         # folder holding quiet/, active/ and bark/ pictures; default <data_dir>/media
     bark_words: bool = True              # red BARK words over the live band when a bark is detected
+    # day_nap, sound_notes and sound_note_min follow the active theme while running
+    # (themes.apply_live_band); config.yaml values only seed a theme once when upgrading
     day_nap: bool = True                 # show the napping dog in the daytime too when it's quiet...
-    day_nap_below_dbfs: float = -50.0    # ...meaning background noise below this level
+    day_nap_below_dbfs: float = -50.0    # ...meaning background noise below this level (a microphone setting)
     sound_notes: bool = True             # "Hearing a car" on the live band for other recognised sounds...
     sound_note_min: float = 0.8          # ...when the sound model is at least this sure
     alert_color: str = "#e8a800"         # (moved into themes in v0.15; kept so old settings load)
