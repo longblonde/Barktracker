@@ -411,7 +411,7 @@ const Beat = (() => {
   // cell (the peak cap) is full brightness; the stack under it is a steady ~55%, so the caps read
   // as a line of sound.
   const ctx = canvas.getContext("2d");
-  let bars = [], last = performance.now(), looping = false;
+  let bars = [], last = performance.now(), looping = false, cssCache = null, cssCacheAt = 0;
   const round = (x, y, w, h, r) => {
     if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); } else ctx.fillRect(x, y, w, h);
   };
@@ -468,7 +468,13 @@ const Beat = (() => {
     const segH = (area - gapY * (S - 1)) / S, gapX = W > 600 ? 4 : 3, bw = (W - gapX * (n - 1)) / n;
     const r = Math.min(2.5, segH / 3, bw / 4);
     const barking = live.mode === "bark" && live.state !== "error";
-    const css = getComputedStyle(band);
+    if (!cssCache || now - cssCacheAt > 1000) {      // plain values: style lookups every frame are slow on a Pi
+      const cs = getComputedStyle(band), v = {};
+      for (const k of ["--ink", "--faint", "--muted"]) v[k] = cs.getPropertyValue(k).trim();
+      cssCache = { fontFamily: cs.fontFamily, getPropertyValue: (k) => v[k] ?? cs.getPropertyValue(k) };
+      cssCacheAt = now;
+    }
+    const css = cssCache;
     const on = barking ? prefs.alertColor : css.getPropertyValue("--ink").trim();
     const off = barking ? on : css.getPropertyValue("--faint").trim(), offAlpha = barking ? 0.16 : 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

@@ -1006,12 +1006,16 @@ def create_app(bark: BarkApp) -> FastAPI:
 
     # ---- EXPERIMENTAL: dual-microphone direction test ---------------------------------
     @app.get("/api/array/feed")
-    def array_feed(since: int = 0, scans_since: float = 0.0):
+    def array_feed(since: int = 0, scans_since: float = 0.0, devices: bool = False, dogs: bool = False,
+                   watch: bool = True):
+        """Direction estimates newer than `since` (at most the last 60) and live scans newer than
+        `scans_since`. Kept light: the Tuning page asks four times a second."""
         arr = bark.array
-        arr.watch()                          # someone's looking: scan the input live for a few seconds
-        evs = [dict(e) for e in list(arr.events) if e["n"] > since]
+        if watch:
+            arr.watch()                      # someone's looking: scan the input live for a few seconds
+        evs = [dict(e) for e in list(arr.events) if e["n"] > since][-60:]
         # the dog each bark belongs to now (your labels, or the latest match), not just the live guess
-        if evs:
+        if evs and dogs:
             rows = store.q("SELECT ts, NULLIF(COALESCE(label_dog_id, pred_dog_id), -1) d FROM barks"
                            " WHERE ts BETWEEN ? AND ?", (evs[0]["ts"] - 1, evs[-1]["ts"] + 1))
             for e in evs:
@@ -1020,7 +1024,7 @@ def create_app(bark: BarkApp) -> FastAPI:
                     e["dog"] = near["d"]
         return {"status": arr.status(), "events": evs,
                 "scans": [x for x in list(arr.scans) if x[0] > scans_since],
-                "devices": None if since else _input_names()}
+                "devices": _input_names() if devices else None}
 
     def _input_names():
         try:

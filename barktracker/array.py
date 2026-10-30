@@ -36,7 +36,7 @@ PAIR_SLACK = 0.25                # extra lag searched in pair mode (two clocks a
 BAND = (300.0, 4000.0)           # bark band used for the correlation
 KEEP_SECONDS = 15 * 60           # estimates older than this are dropped from memory
 MAX_PER_PASS = 8                 # estimates per 0.25 s pass, so a noisy yard can't hog the Pi's CPU
-SCAN_EVERY = 0.1                 # live scan while someone watches the Tuning page
+SCAN_EVERY = 0.15                # live scan while someone watches the Tuning page
 SCAN_WINDOW = 0.12               # seconds of audio per live scan
 SCAN_LAG = 0.3                   # scan this far behind real time, so both streams have arrived
 SCAN_MIN_RISE = 3.0              # dB over the background before a scan is worth showing
@@ -201,6 +201,7 @@ class ArrayMonitor:
         self.scans: collections.deque = collections.deque(maxlen=120)   # [ts, angle, rise, bark]
         self.watch_until = 0.0
         self.scan_note = ""
+        self.scan_ms = 0.0
         self._last_scan = 0.0
         self._stop = threading.Event()
         self._b_restart = threading.Event()
@@ -289,10 +290,15 @@ class ArrayMonitor:
                 continue
             now = time.time()
             if now < self.watch_until:
+                t = time.monotonic()
                 try:
                     self.scan(now)
                 except Exception:  # noqa: BLE001
                     log.debug("live direction scan failed", exc_info=True)
+                took = time.monotonic() - t
+                self.scan_ms = round(took * 1000, 1)
+                if took > SCAN_EVERY:            # a slow Pi: back off rather than eat a whole core
+                    self._stop.wait(took)
             if now - last >= 0.25:
                 last = now
                 self.process()
@@ -452,7 +458,7 @@ class ArrayMonitor:
             "second_name": self.b_name, "second_rate": self.b_rate,
             "second_live": bool(self.b.blocks) and time.time() - self.b.latest() < 3.0,
             "stereo_live": bool(self.st_a.blocks) and time.time() - self.st_a.latest() < 3.0,
-            "calibrating": self.calibrating, "error": self.error, "scan_note": self.scan_note,
+            "calibrating": self.calibrating, "error": self.error, "scan_note": self.scan_note, "scan_ms": self.scan_ms,
             "lag_s": round(time.time() - chan.latest(), 2) if chan.blocks else None,
             "max_delay_us": round(d.spacing_cm / 100.0 / SPEED_OF_SOUND * 1e6, 1),
         }

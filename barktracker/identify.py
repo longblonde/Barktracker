@@ -125,8 +125,9 @@ def direction_priors(store: Store, ids: list[int]) -> list[dict | None] | None:
             model[d] = (med, max(8.0, 1.5 * spread))
     if not model or not ids:
         return None
+    # every unlabelled bark that has a direction, in one pass (no giant IN list)
     rows = store.q("SELECT b.id, bd.bearing FROM barks b JOIN bark_dirs bd ON bd.ts BETWEEN b.ts - 0.3 AND b.ts + 0.3"
-                   f" WHERE bd.valid=1 AND b.id IN ({','.join('?' * len(ids))})", ids)
+                   " WHERE bd.valid=1 AND b.label_dog_id IS NULL")
     bearing = {r["id"]: r["bearing"] for r in rows}
     out: list[dict | None] = []
     for i in ids:

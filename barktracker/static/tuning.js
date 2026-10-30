@@ -236,6 +236,17 @@ async function renderTune() {
   }
 
   function xOf(idx, W) { return W - ((live.last - idx) / (live.frame || 800)) * (W / N); }
+  let tcol = null, tcolAt = 0;
+  function timelineColors() {
+    const now = performance.now();
+    if (!tcol || now - tcolAt > 2000) {
+      tcol = { danger: cssVar("--danger"), muted: cssVar("--muted"), caution: cssVar("--caution"), ink: cssVar("--ink"),
+               font: getComputedStyle(document.body).fontFamily };
+      tcolAt = now;
+    }
+    return tcol;
+  }
+  let laneKey = "";
   function drawTimeline() {
     const s = tuneSettings(cur), dpr = window.devicePixelRatio || 1;
     const W = spec.clientWidth;
@@ -251,7 +262,8 @@ async function renderTune() {
     lc.setTransform(dpr, 0, 0, dpr, 0, 0);
     lc.clearRect(0, 0, W, H2);
     const y = (db) => H2 - 4 - ((Math.max(-90, Math.min(-10, db)) + 90) / 80) * (H2 - 8);
-    lc.font = `11px ${getComputedStyle(document.body).fontFamily}`; lc.fillStyle = cssVar("--muted");
+    const tc0 = timelineColors();
+    lc.font = `11px ${tc0.font}`; lc.fillStyle = tc0.muted;
     for (const db of [-80, -60, -40, -20]) {
       lc.globalAlpha = 0.35; lc.fillRect(0, Math.round(y(db)), W, 1); lc.globalAlpha = 1;
       lc.fillText(`${db}`, 2, y(db) - 2);
@@ -266,11 +278,15 @@ async function renderTune() {
       });
       lc.stroke(); lc.setLineDash([]);
     };
-    line(() => s.min_level, cssVar("--danger"), [2, 4], 1);
-    line((fr) => fr.floor, cssVar("--muted"), [5, 4]);
-    line((fr) => fr.floor == null ? null : Math.max(fr.floor + s.trigger_db, s.min_level), cssVar("--caution"), [], 1.5);
-    line((fr) => fr.level, cssVar("--ink"), [], 1.2);
+    const tc = timelineColors();
+    line(() => s.min_level, tc.danger, [2, 4], 1);
+    line((fr) => fr.floor, tc.muted, [5, 4]);
+    line((fr) => fr.floor == null ? null : Math.max(fr.floor + s.trigger_db, s.min_level), tc.caution, [], 1.5);
+    line((fr) => fr.level, tc.ink, [], 1.2);
     let right = -Infinity;                        // tags that would overlap the previous one shrink to dots
+    const key = `${live.ev.length}:${live.ev[live.ev.length - 1]?.id}:${Math.round(live.last / ((live.frame || 800) * 4))}:${live.selId}:${JSON.stringify(S.whatIf)}:${dir.list.length}:${W}`;
+    if (key === laneKey) return;
+    laneKey = key;
     lane.innerHTML = live.ev.slice(-150).map((e) => {
       const vd = tuneVerdict(e, s), k = TUNE.KINDS[vd.kind], x = xOf(e.idx, W);
       if (x < 0) return "";
@@ -338,15 +354,31 @@ function makePolar(canvas) {
     if (t > b.h) b.h = t;
     if (barking) b.barkUntil = performance.now() + 1500;
   }
+  // theme colors, read once a second rather than every frame (style lookups are slow on a Pi)
+  let colors = null, colorsAt = 0, idleFrames = 0, lastDraw = 0;
+  const readColors = (now) => {
+    if (!colors || now - colorsAt > 1000) {
+      colors = { ink: cssVar("--ink"), faint: cssVar("--faint"), muted: cssVar("--muted"), alert: cssVar("--alert") || "#e8a800",
+                 font: getComputedStyle(document.body).fontFamily, kinds: {} };
+      for (const [k, v] of Object.entries(TUNE.KINDS)) colors.kinds[k] = resolveColor(v.color);
+      colorsAt = now;
+    }
+    return colors;
+  };
+  let dirty = true;
   function frame(now) {
     if (!running) return;
+    if (now - lastDraw < 32 && !calm()) { raf = requestAnimationFrame(frame); return; }      // at most ~30 fps
+    lastDraw = now;
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
     const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
-    if (W && H) {
+    const moving = bars.some((b) => b.h > 0 || b.peak > 0);
+    idleFrames = moving || dirty ? 0 : idleFrames + 1;
+    if (W && H && idleFrames < 2) {                     // nothing moving: leave the last picture up
+      dirty = false;
       if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
-      const g = canvas.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-      const font = getComputedStyle(document.body).fontFamily;
-      const ink = cssVar("--ink"), faint = cssVar("--faint"), muted = cssVar("--muted"), alert = cssVar("--alert") || "#e8a800";
+      const g = canvas.getContext("2d", { alpha: true }); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+      const c = readColors(now), font = c.font, ink = c.ink, faint = c.faint, muted = c.muted, alert = c.alert;
       const cx = W / 2, cy = H - 26, R = Math.max(40, Math.min(W / 2 - 46, H - 52)), r0 = R * 0.2;
       const S_ = POLAR.SEGS, gap = Math.max(2, R / 70), segH = (R - r0 - gap * (S_ - 1)) / S_;
       const pad = Math.min(2.2, wedge * 0.12);          // degrees of gap between wedges
@@ -389,7 +421,7 @@ function makePolar(canvas) {
         const x = cx + Math.cos(t) * (R + 14), y = cy + Math.sin(t) * (R + 14);
         g.globalAlpha = Math.max(0.3, 1 - age / POLAR.MARKS);
         g.beginPath(); g.arc(x, y, e.id === sel ? 9 : 7.5, 0, 2 * Math.PI);
-        g.fillStyle = resolveColor(TUNE.KINDS[e.kind]?.color || "var(--muted)"); g.fill();
+        g.fillStyle = c.kinds[e.kind] || muted; g.fill();
         if (e.id === sel) { g.lineWidth = 2; g.strokeStyle = ink; g.stroke(); }
         g.fillStyle = "#fff"; g.font = `600 9px ${font}`; g.fillText(String(e.n % 100), x, y + 3);
       });
@@ -399,8 +431,11 @@ function makePolar(canvas) {
   }
   raf = requestAnimationFrame(frame);
   return {
-    hit, setWedge(w) { wedge = w; reset(); },
-    marks(list, selected) { marks = list; sel = selected ?? null; },
+    hit(a, r, b) { hit(a, r, b); dirty = true; }, setWedge(w) { wedge = w; reset(); dirty = true; },
+    marks(list, selected) {
+      const key = list.map((e) => e.n).join(",") + "|" + selected;
+      if (key !== marks.key) { marks = list; marks.key = key; sel = selected ?? null; dirty = true; }
+    },
     stop() { running = false; cancelAnimationFrame(raf); clearTimeout(raf); },
   };
 }
