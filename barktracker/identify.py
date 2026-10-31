@@ -50,9 +50,12 @@ class DogIdentifier:
             self.classes = {int(c): int((y == c).sum()) for c in np.unique(y)}
             # "too far from anything we've seen" radius: 95th pct of within-class NN distance x 1.6
             if len(self.X) > 1:
-                d = self._dist(self.X, self.X)
+                # judged on a sample: comparing every pair of thousands of labels needs GBs on a Pi
+                S = np.random.default_rng(0).choice(len(self.X), 2000, replace=False) if len(self.X) > 2000 else np.arange(len(self.X))
+                Xs, ys = self.X[S], y[S]
+                d = self._dist(Xs, Xs)
                 np.fill_diagonal(d, np.inf)
-                same = (y[:, None] == y[None, :])
+                same = (ys[:, None] == ys[None, :])
                 d_same = np.where(same, d, np.inf).min(axis=1)
                 finite = d_same[np.isfinite(d_same)]
                 self.radius = float(np.percentile(finite, 95) * 1.6) if len(finite) else np.inf
@@ -67,7 +70,17 @@ class DogIdentifier:
         bb = (B * B).sum(1)[None, :]
         return np.sqrt(np.maximum(aa + bb - 2 * A @ B.T, 0))
 
-    def predict(self, feats: np.ndarray, priors: list[dict | None] | None = None) -> list[tuple[int | None, float]]:
+    def predict(self, feats: np.ndarray, priors: list[dict | None] | None = None,
+                chunk: int = 1000) -> list[tuple[int | None, float]]:
+        """Matched in chunks, so memory stays small however many barks are logged."""
+        if len(feats) > chunk:
+            out: list[tuple[int | None, float]] = []
+            for i in range(0, len(feats), chunk):
+                out += self._predict(feats[i:i + chunk], priors[i:i + chunk] if priors is not None else None)
+            return out
+        return self._predict(feats, priors)
+
+    def _predict(self, feats: np.ndarray, priors: list[dict | None] | None = None) -> list[tuple[int | None, float]]:
         """Returns (dog_id or None if unsure, confidence) per row. `priors` (one per row, or None)
         weighs each dog's vote, e.g. by how well the bark's direction fits where that dog barks."""
         with self._lock:
@@ -76,7 +89,8 @@ class DogIdentifier:
             Q = (np.atleast_2d(feats) - self.mu) / self.sd
             d = self._dist(Q, self.X)
             k = min(self.k, len(self.X))
-            nn = np.argsort(d, axis=1)[:, :k]
+            nn = np.argpartition(d, k - 1, axis=1)[:, :k] if k < d.shape[1] else np.argsort(d, axis=1)[:, :k]
+            nn = np.take_along_axis(nn, np.argsort(np.take_along_axis(d, nn, axis=1), axis=1), axis=1)
             out = []
             for i in range(len(Q)):
                 idx = nn[i]

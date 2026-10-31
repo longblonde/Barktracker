@@ -146,13 +146,24 @@ CREATE TABLE IF NOT EXISTS bark_dirs (
     spacing_cm REAL
 );
 CREATE INDEX IF NOT EXISTS ix_bark_dirs_ts ON bark_dirs(ts);
+CREATE INDEX IF NOT EXISTS ix_bark_dirs_valid_ts ON bark_dirs(valid, ts);
 """
+STORED_KINDS = ("bark", "not_bark", "filtered")   # sounds that reached the bark check; "quiet" ones aren't kept
 KEEP_DAYS = 365                  # direction records kept this long (they're tiny)
 
 
 def ensure_schema(store) -> None:
     with store.tx() as c:
         c.executescript(SCHEMA)
+    if store.get_meta("bark_dirs_v", 0) < 2:
+        # before v0.16.1 a direction was kept for every sound the detector looked at, mostly ones too
+        # quiet to check: millions of rows on a Pi that had direction on for a while, which made the
+        # Dogs and dashboard look-ups crawl. Only barks and near-barks are needed.
+        with store.tx() as c:
+            c.execute(f"DELETE FROM bark_dirs WHERE kind NOT IN ({','.join('?' * len(STORED_KINDS))}) OR kind IS NULL",
+                      STORED_KINDS)
+            c.execute("ANALYZE bark_dirs")
+        store.set_meta("bark_dirs_v", 2)
 
 
 def nearest_dirs(store, stamps: list[float], within: float = 0.3) -> dict[float, dict]:
@@ -429,7 +440,7 @@ class ArrayMonitor:
                "rise": ev.get("rise"), "peak": ev.get("peak"), "dog": ev.get("dog")}
         self.events.append(out)
         store = getattr(self.app, "store", None)
-        if store is not None:                    # kept, so dogs' usual directions can be learned
+        if store is not None and ev["kind"] in STORED_KINDS:   # kept, so dogs' usual directions can be learned
             try:
                 with store.tx() as c:
                     c.execute("INSERT INTO bark_dirs(ts, kind, bearing, clarity, valid, level_a, level_b, mode, spacing_cm)"

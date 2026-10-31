@@ -20,6 +20,7 @@ from .storage import NOT_BARK, Store
 SIZES = ("small", "medium", "large")
 # Rough bark pitch / brightness bands by dog size (fundamental and spectral centroid, Hz).
 PITCH_LARGE_BELOW, PITCH_SMALL_ABOVE = 420.0, 680.0
+SEPARATION_SAMPLE = 300          # confirmed barks per dog used for the "told apart" check
 BRIGHT_LARGE_BELOW, BRIGHT_SMALL_ABOVE = 1150.0, 1900.0
 
 
@@ -80,6 +81,11 @@ def separation(by_dog: dict[int, list[np.ndarray]], k: int = 5, min_each: int = 
     dogs = [d for d, fs in by_dog.items() if len(fs) >= min_each]
     if len(dogs) < 2:
         return {}
+    # an even sample per dog keeps this quick however many barks are labelled (it compares every
+    # pair, so a few thousand labels would otherwise take seconds and hundreds of MB on a Pi)
+    rng = np.random.default_rng(0)
+    by_dog = {d: (list(np.asarray(fs)[rng.choice(len(fs), SEPARATION_SAMPLE, replace=False)])
+                  if len(fs) > SEPARATION_SAMPLE else fs) for d, fs in by_dog.items()}
     X = np.stack([f for d in dogs for f in by_dog[d]])
     y = np.array([d for d in dogs for _ in by_dog[d]])
     X = (X - X.mean(0)) / (X.std(0) + 1e-3)

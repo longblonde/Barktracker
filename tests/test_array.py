@@ -168,3 +168,23 @@ def test_directions_are_kept_per_bark_and_per_dog(tmp_path):
     barks = c.get(f"/api/episodes/{ep['id']}").json()["barks"]
     assert any(b["bearing"] is not None for b in barks)
     app.shutdown()
+
+
+def test_direction_table_stays_fast(tmp_path):
+    """Directions are kept only for sounds that reached the bark check, old "quiet" rows are cleared
+    once, and look-ups use the (valid, ts) index rather than scanning every row per bark."""
+    import sqlite3
+    from barktracker.array import ensure_schema
+    from barktracker.storage import Store
+    st = Store(tmp_path / "barktracker.db")
+    ensure_schema(st)
+    st.set_meta("bark_dirs_v", 1)                              # a database from before v0.16.1
+    with st.tx() as c:
+        c.executemany("INSERT INTO bark_dirs(ts, kind, bearing, clarity, valid) VALUES (?,?,?,?,1)",
+                      [(float(i), "quiet" if i % 10 else "bark", 90.0, 6.0) for i in range(20000)])
+    ensure_schema(st)
+    assert st.q1("SELECT COUNT(*) n FROM bark_dirs")["n"] == 2000
+    plan = " ".join(str(r) for r in sqlite3.connect(tmp_path / "barktracker.db").execute(
+        "EXPLAIN QUERY PLAN SELECT bd.bearing FROM barks b JOIN bark_dirs bd ON bd.ts BETWEEN b.ts - 0.3"
+        " AND b.ts + 0.3 WHERE bd.valid = 1 AND COALESCE(b.label_dog_id, b.pred_dog_id) > 0"))
+    assert "ix_bark_dirs_valid_ts" in plan and "AUTOMATIC" not in plan
