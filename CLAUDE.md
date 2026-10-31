@@ -5,7 +5,7 @@ identification, ordinance-based complaint reports. Repo: github.com/longblonde/B
 
 ## Where things stand
 
-- `main` is v0.16.1 (v0.15.0 was the `refactor` branch; v0.16.0 `theme-liveband`; v0.16.1 sped up Dogs/dashboard on a long direction log; all 2026-10-30). `main` gets one squashed commit per
+- `main` is v0.16.2 (v0.15.0 was the `refactor` branch; v0.16.0 `theme-liveband`; v0.16.1 sped up Dogs/dashboard on a long direction log; v0.16.2 Clips loads as you scroll; all 2026-10-30). `main` gets one squashed commit per
   release, titled `vX.Y.Z: ...`; work happens on a dev branch the owner tests on the Pi first (they
   call it "the test branch"). Don't merge to main unless asked.
 - The owner's questions in `docs/REFACTOR-QUESTIONS.md` are all answered (#6, labelling a whole

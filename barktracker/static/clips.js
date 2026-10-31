@@ -12,6 +12,12 @@ function tagBadge(t, fp) {
   if (!TAGS[t]) return "";
   return `<span class="mark mark-${t}" title="${TAGS[t][1]}">${t === "manual" ? "✓ " : ""}${TAGS[t][0]}</span>`;
 }
+// The list starts with enough clips to fill a tall window and fetches more as you near the end.
+// A filter change starts it over from the newest.
+const CLIPS_FIRST = 50, CLIPS_MORE = 30;
+let clipFeed = null;          // { qs, loaded, total, busy, done, gen } for the list on screen
+let clipGen = 0;
+
 function loadClipPrefs() {
   if (S.clipPrefsLoaded) return;
   S.clipPrefsLoaded = true;
@@ -22,12 +28,14 @@ async function renderClips() {
   loadClipPrefs();
   await loadDogs();
   const f = S.clipFilters, openId = route.arg ? Number(route.arg) : null;
-  const qs = new URLSearchParams({ limit: 30, offset: f.offset || 0, include_fp: !f.hideNb });
+  const qs = new URLSearchParams({ include_fp: !f.hideNb });
   if (f.dog) qs.set("dog", f.dog);
   if (f.tag) qs.set("tag", f.tag);
   if (f.min) qs.set("min_duration", f.min);
-  const [r, nb] = await Promise.all([api(`/api/episodes?${qs}`), api("/api/not-bark")]);
-  if (route.name !== "clips") return;
+  const gen = ++clipGen;
+  const [r, nb] = await Promise.all([api(`/api/episodes?${qs}&limit=${CLIPS_FIRST}&offset=0`), api("/api/not-bark")]);
+  if (route.name !== "clips" || gen !== clipGen) return;
+  clipFeed = { qs: String(qs), loaded: r.items.length, total: r.total, busy: false, done: r.items.length >= r.total, gen };
   const items = r.items;
   try { localStorage.setItem("bt.clipsSeen", String(Date.now() / 1000)); } catch (_) { /* private mode */ }
   const opts = Object.values(S.dogs).map((d) => `<option value="${d.id}" ${f.dog == d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("");
@@ -45,11 +53,7 @@ async function renderClips() {
       </div>
       ${!f.hideNb && nb.with_audio ? `<div class="notice nb small">Clips marked “Not a bark” teach the Pi to ignore similar sounds${nb.filter_active ? " (it's doing so now)" : ""}. Their audio isn't needed for that. <button class="btn" id="nbBulk">Delete audio of all ${nb.with_audio} (${nb.audio_mb} MB)</button></div>` : ""}
       <div class="list cliplist" id="clipList">${items.length ? items.map(clipRow).join("") : `<div class="empty"><strong>No clips match</strong>${r.total ? "Try another filter." : "When the Pi hears barking it saves a clip here."}</div>`}</div>
-      <div class="pager">
-        <button class="btn" id="pPrev" ${!f.offset ? "disabled" : ""}>Newer</button>
-        <span class="small muted">${r.total ? `${(f.offset || 0) + 1}–${Math.min((f.offset || 0) + 30, r.total)} of ${r.total}` : ""}</span>
-        <button class="btn" id="pNext" ${(f.offset || 0) + 30 >= r.total ? "disabled" : ""}>Older</button>
-      </div>
+      <div class="pager" id="clipMore" aria-live="polite"></div>
       <p class="small muted">Select a clip to open it here. While one is open, ↑ and ↓ move to the clip above or below.</p>
     </section>`;
   const reload = () => { f.offset = 0; location.hash = "#/clips"; renderClips(); };
@@ -57,8 +61,13 @@ async function renderClips() {
   $("#fDog").onchange = (e) => { f.dog = e.target.value; reload(); };
   $("#fTag").onchange = (e) => { f.tag = e.target.value; reload(); };
   $("#fMin").onchange = (e) => { f.min = Number(e.target.value) || 0; reload(); };
-  $("#pPrev").onclick = () => { f.offset = Math.max(0, (f.offset || 0) - 30); location.hash = "#/clips"; renderClips(); };
-  $("#pNext").onclick = () => { f.offset = (f.offset || 0) + 30; location.hash = "#/clips"; renderClips(); };
+  drawClipMore();
+  const more = $("#clipMore");
+  if ("IntersectionObserver" in window) {        // fetch the next clips before the end comes into view
+    const obs = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) loadMoreClips(); }, { rootMargin: "800px 0px" });
+    obs.observe(more);
+    LOOPS.add(() => obs.disconnect());
+  }
   const bulk = $("#nbBulk");
   if (bulk) bulk.onclick = async () => {
     const res = await api("/api/not-bark/delete-audio", { method: "POST" });
@@ -80,7 +89,10 @@ async function renderClips() {
     const open = list.querySelector(".ep.open"); if (!open) return;
     const rows = [...list.querySelectorAll(".ep[data-id]")], i = rows.indexOf(open);
     const go = (j) => { if (rows[j]) { ev.preventDefault(); toggleClip(Number(rows[j].dataset.id), true); } };
-    if (ev.key === "ArrowDown" || ev.key === "j") go(i + 1);
+    if ((ev.key === "ArrowDown" || ev.key === "j") && i === rows.length - 1 && clipFeed && !clipFeed.done) {
+      ev.preventDefault();                       // at the last clip loaded: fetch more, then move on
+      loadMoreClips().then(() => { const next = open.nextElementSibling?.nextElementSibling; if (next?.dataset?.id) toggleClip(Number(next.dataset.id), true); });
+    } else if (ev.key === "ArrowDown" || ev.key === "j") go(i + 1);
     else if (ev.key === "ArrowUp" || ev.key === "k") go(i - 1);
     else if (ev.key === "Escape") { ev.preventDefault(); toggleClip(Number(open.dataset.id)); }
   };
@@ -93,6 +105,34 @@ async function renderClips() {
     }
     toggleClip(openId, true);
   }
+}
+
+function drawClipMore() {
+  const el = $("#clipMore"); if (!el || !clipFeed) return;
+  const c = clipFeed;
+  el.innerHTML = !c.total ? "" : c.done
+    ? `<span class="small muted">${c.total > CLIPS_FIRST ? `All ${c.total} clips shown` : ""}</span>`
+    : `<span class="small muted">${c.busy ? "Loading more…" : `Showing ${c.loaded} of ${c.total}`}</span>
+       <button class="btn" id="clipMoreBtn" ${c.busy ? "disabled" : ""}>Load more</button>`;
+  const b = $("#clipMoreBtn"); if (b) b.onclick = () => loadMoreClips();
+}
+
+async function loadMoreClips() {
+  const c = clipFeed, list = $("#clipList");
+  if (!c || c.busy || c.done || !list || c.gen !== clipGen) return;
+  c.busy = true; drawClipMore();
+  try {
+    const r = await api(`/api/episodes?${c.qs}&limit=${CLIPS_MORE}&offset=${c.loaded}`);
+    if (c.gen !== clipGen || !list.isConnected) return;
+    const have = new Set([...list.querySelectorAll(".ep[data-id]")].map((x) => x.dataset.id));
+    list.insertAdjacentHTML("beforeend", r.items.filter((e) => !have.has(String(e.id))).map(clipRow).join(""));
+    c.loaded += r.items.length; c.total = r.total;
+    c.done = !r.items.length || c.loaded >= r.total;
+  } catch (e) { toast(e.message); }
+  finally { c.busy = false; drawClipMore(); }
+  // a very tall window may still show the end: keep going until it's filled
+  const el = $("#clipMore");
+  if (el && !c.done && c.gen === clipGen && el.getBoundingClientRect().top < innerHeight + 800) loadMoreClips();
 }
 
 function spanText(e) { return e.bark_count > 1 ? fmtDur(e.duration) : "single bark"; }
@@ -165,6 +205,7 @@ async function clipDetail(box, id, row) {
     toast(msg);
     const next = box.nextElementSibling?.dataset?.id || row.previousElementSibling?.previousElementSibling?.dataset?.id;
     box.remove(); row.remove();
+    if (clipFeed) { clipFeed.loaded = Math.max(0, clipFeed.loaded - 1); clipFeed.total = Math.max(0, clipFeed.total - 1); drawClipMore(); }
     if (next) toggleClip(Number(next), true); else history.replaceState(null, "", "#/clips");
   };
   if (ep.has_clip) {
